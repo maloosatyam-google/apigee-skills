@@ -48,7 +48,8 @@ bash    $SK/apigee-proxy-builder/scripts/deploy_bundle.sh ./ai-gateway-v1 --org 
 
 # 3. Product + app, then call it
 python3 $SK/apigee-proxy-lifecycle/scripts/apigee_ctl.py product-apply ./ai-gateway-v1/api_product.json --env $ENV
-# create a developer + app with that product, then:
+python3 $SK/apigee-proxy-lifecycle/scripts/apigee_ctl.py app-create dev@example.com ai-tester \
+  --product "ai-gateway-v1 - Standard" --create-developer                  # prints KEY
 B='{"contents":[{"role":"user","parts":[{"text":"Write a Python function that reverses a list"}]}]}'
 curl -si https://$HOST/ai/v1/models/gemini-3.6-flash:generateContent -H "x-apikey: $KEY" -H 'Content-Type: application/json' -d "$B" | grep -i x-gateway
 curl -si https://$HOST/ai/v1/models/claude-haiku-5-5:generateContent -H "x-apikey: $KEY" -H 'Content-Type: application/json' -d "$B" | grep -i x-gateway

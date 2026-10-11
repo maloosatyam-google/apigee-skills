@@ -425,6 +425,90 @@ class Provisioning(Base):
         run(tf, f"-chdir={work}", "test")
 
 
+class ConsumerAndConfigManagement(Base):
+    """Developers, apps, keys, products, KVMs (all scopes) and target servers via apigee_ctl.py (mock API)."""
+
+    def setUp(self):
+        super().setUp()
+        import mock_apigee
+        self.srv, self.state = mock_apigee.start()
+        self.env = dict(os.environ, APIGEE_TOKEN="test", APIGEE_ORG="org1", APIGEE_ENV="dev",
+                        APIGEE_API_BASE=f"http://127.0.0.1:{self.srv.server_port}")
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+        super().tearDown()
+
+    def ctl(self, *a, **kw):
+        return py(CTL, *a, env=self.env, **kw)
+
+    def test_developer_app_key_lifecycle(self):
+        out = self.p("api")
+        py(API, "--out", out, "--name", "o", "--basepath", "/o", "--target", "https://t")
+        self.ctl("product-apply", os.path.join(out, "api_product.json"))
+        self.assertIn("o-standard", self.ctl("product-list").stdout)
+
+        r = self.ctl("app-create", "jane@example.com", "jane-app", "--product", "o-standard",
+                     "--create-developer", "--credentials-out", self.p("creds.json"))
+        self.assertIn("Created developer jane@example.com", r.stdout)
+        self.assertIn("key=KEY0001abcdefgh", r.stdout)
+        self.assertNotIn("SECRET0001xyz", r.stdout)                       # secret masked
+        self.assertEqual(oct(os.stat(self.p("creds.json")).st_mode & 0o777), "0o600")
+        self.assertEqual(json.load(open(self.p("creds.json")))["consumerSecret"], "SECRET0001xyz")
+
+        # idempotent re-run adds a missing product to the existing key instead of creating a second app
+        self.state.products["o-premium"] = {"name": "o-premium"}
+        r = self.ctl("app-create", "jane@example.com", "jane-app", "--product", "o-standard", "--product", "o-premium")
+        self.assertIn("Added o-premium", r.stdout)
+        self.assertEqual(len(self.state.apps), 1)
+        self.assertIn("o-premium", self.ctl("app-list", "jane@example.com").stdout)
+        self.assertIn("SECRET0001xyz", self.ctl("app-get", "jane@example.com", "jane-app", "--show-secret").stdout)
+
+        self.ctl("key-revoke", "jane@example.com", "jane-app", "KEY0001abcdefgh", "--product", "o-premium")
+        cred = self.state.apps[("jane@example.com", "jane-app")]["credentials"][0]
+        self.assertEqual({p["apiproduct"]: p["status"] for p in cred["apiProducts"]}["o-premium"], "revoked")
+        self.ctl("key-revoke", "jane@example.com", "jane-app", "KEY0001abcdefgh")
+        self.assertEqual(self.state.apps[("jane@example.com", "jane-app")]["credentials"][0]["status"], "revoked")
+
+        self.assertIn("jane@example.com", self.ctl("developer-list").stdout)
+        self.ctl("app-delete", "jane@example.com", "jane-app", ok=False)    # needs --yes
+        self.ctl("app-delete", "jane@example.com", "jane-app", "--yes")
+        self.ctl("developer-delete", "jane@example.com", "--yes")
+        self.ctl("product-delete", "o-standard", "--yes")
+        self.assertEqual(self.state.developers, {})
+        self.assertNotIn("o-standard", self.state.products)
+
+    def test_kvm_scopes_and_masking(self):
+        self.ctl("kvm-put", "cfg", "api-key", "-", stdin="supersecretvalue\n")          # env scope (APIGEE_ENV)
+        self.ctl("kvm-put", "global", "flag", "on", "--org-scope")
+        self.ctl("kvm-put", "local", "limit", "5", "--proxy", "orders-v1")
+        self.assertEqual(self.state.kvms[("dev", "cfg")]["api-key"], "supersecretvalue")
+        self.assertIn(("_org", "global"), self.state.kvms)
+        self.assertIn(("proxy:orders-v1", "local"), self.state.kvms)
+        listing = self.ctl("kvm-entries", "cfg").stdout
+        self.assertIn("api-key", listing)
+        self.assertNotIn("supersecretvalue", listing)
+        self.assertIn("supersecretvalue", self.ctl("kvm-get", "cfg", "api-key", "--show").stdout)
+        self.assertIn("cfg", self.ctl("kvm-list").stdout)
+        self.ctl("kvm-delete-entry", "cfg", "api-key", ok=False)
+        self.ctl("kvm-delete-entry", "cfg", "api-key", "--yes")
+        self.ctl("kvm-delete", "global", "--org-scope", "--yes")
+        self.assertNotIn(("_org", "global"), self.state.kvms)
+
+    def test_target_servers(self):
+        ts = self.p("ts.json")
+        with open(ts, "w") as f:
+            json.dump({"name": "orders-backend", "host": "orders.internal", "port": 443, "isEnabled": True,
+                       "sSLInfo": {"enabled": True}}, f)
+        self.ctl("targetserver-apply", ts)
+        self.assertIn("orders-backend", self.ctl("targetserver-list").stdout)
+        self.assertIn("orders.internal", self.ctl("targetserver-get", "orders-backend").stdout)
+        self.ctl("targetserver-delete", "orders-backend", ok=False)
+        self.ctl("targetserver-delete", "orders-backend", "--yes")
+        self.assertEqual(self.state.targetservers, {})
+
+
 class DeployScript(Base):
     def test_package_only(self):
         out = self.p("o")

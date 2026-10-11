@@ -72,8 +72,23 @@ Edited files are re-indented (comments preserved), so the first diff after a str
 |---|---|
 | Read | `list`, `info NAME`, `deployments [--env]`, `export NAME --out DIR [--rev N\|--env E] [--force]`, `diff DIR [NAME] [--rev\|--env]` |
 | Write | `import DIR`, `deploy NAME --rev N --env E [--sa]`, `update DIR --env E [--sa]`, `rollback NAME --env E [--to-rev N]`, `undeploy NAME --env E [--rev N]` |
-| Config | `product-apply FILE.json [--env E]` (create or update, replaces `<ENV>`), `product-get NAME`, `kvm-put MAP KEY VALUE\|- --env E` (encrypted map, `-` reads stdin), `targetserver-apply FILE.json --env E`, `flowhook-attach HOOK SHAREDFLOW --env E` |
+| API products | `product-apply FILE.json [--env E]` (create or update, replaces `<ENV>`), `product-get NAME`, `product-list`, `product-delete NAME --yes` |
+| Developers | `developer-create EMAIL [--first --last --username --attr k=v]` (idempotent), `developer-get`, `developer-list`, `developer-delete EMAIL --yes` |
+| Apps & keys | `app-create DEV_EMAIL APP --product P [--product P2] [--create-developer] [--callback URL] [--key-expires-in-ms MS] [--credentials-out FILE] [--show-secret]` (idempotent: re-running adds missing products to the existing key), `app-get`, `app-list DEV_EMAIL`, `app-delete ... --yes`, `key-approve` / `key-revoke DEV_EMAIL APP KEY [--product P]` |
+| KVMs | scope: `--env E` (default `$APIGEE_ENV`), `--org-scope` or `--proxy NAME`. `kvm-put MAP KEY VALUE\|-` (creates an **encrypted** map; `-` reads stdin), `kvm-list`, `kvm-entries MAP`, `kvm-get MAP KEY` (values masked unless `--show`), `kvm-delete-entry MAP KEY --yes`, `kvm-delete MAP --yes` |
+| Target servers | `targetserver-apply FILE.json --env E`, `targetserver-list`, `targetserver-get NAME`, `targetserver-delete NAME --yes` |
+| Flow hooks | `flowhook-attach HOOK SHAREDFLOW --env E` |
 | Debug | `debug NAME --env E [--seconds 60] [--out DIR]`: starts a trace session, you send traffic, it saves every transaction and prints the executed policies per call; `debugmask-get --env E`, `debugmask-apply mask.json --env E` mask secrets/PII in traces (set this before tracing production) |
+
+## Onboarding a consumer (product → developer → app → key)
+```bash
+$C product-apply ./orders-v1/api_product.json --env dev                     # plan = product (paths, verbs, quota)
+$C app-create jane@partner.com partner-portal --product orders-v1-standard \
+   --create-developer --credentials-out ./partner-portal.creds.json          # prints the API key; secret only in the 0600 file
+$C key-revoke jane@partner.com partner-portal KEY --product orders-v1-standard   # cut off one product
+```
+Secrets (consumer secrets, KVM values) are masked in output unless `--show-secret` / `--show`; never paste them into chat
+or commit them. Every `*-delete` requires `--yes` and must be confirmed with the user first.
 
 ## Choosing what to change
 | Requirement | Change the... | Not the... |

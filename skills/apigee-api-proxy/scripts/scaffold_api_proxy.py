@@ -601,7 +601,7 @@ def main():
     nxt.append("deploy_bundle.sh " + o.out + " --org ORG --env ENV"
                + (" --sa RUNTIME_SA" if o.target_auth != "none" or o.cloud_logging else ""))
     if o.auth in ("apikey", "oauth"):
-        nxt.append(f"apigee_ctl.py product-apply {o.out}/api_product.json --env ENV, then create a developer app")
+        nxt.append(f"apigee_ctl.py product-apply {o.out}/api_product.json --env ENV -> apigee_ctl.py app-create EMAIL APP --product {o.name}-standard --create-developer")
     print("Next: " + " -> ".join(nxt))
 
 

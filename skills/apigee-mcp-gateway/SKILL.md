@@ -51,7 +51,10 @@ bash    $SK/apigee-proxy-builder/scripts/deploy_bundle.sh ./orders-mcp --org $OR
 for f in ./orders-mcp/products/*.json; do
   python3 $SK/apigee-proxy-lifecycle/scripts/apigee_ctl.py product-apply "$f" --env $ENV
 done
-# then one developer app per persona (each app gets that persona's product)
+# one app per persona; each app's key carries only that persona's tool product
+C="python3 $SK/apigee-proxy-lifecycle/scripts/apigee_ctl.py"
+$C app-create support-agent@example.com support-agent --product "Orders Tools MCP - Support" --create-developer
+$C app-create insights-agent@example.com insights-agent --product "Orders Tools MCP - Insights" --create-developer
 ```
 
 Demo calls:

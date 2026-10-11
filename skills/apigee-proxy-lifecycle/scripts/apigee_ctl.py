@@ -21,12 +21,25 @@ Write
   rollback NAME --env ENV [--to-rev N] [--sa SA]
                                          redeploy the previous (or given) revision
   undeploy NAME --env ENV [--rev N]
-Config
+Config (API products, developers, apps, keys)
   product-apply FILE.json [--env ENV]    create or update an API product (replaces "<ENV>" placeholders)
-  product-get NAME
-  kvm-put MAP KEY VALUE --env ENV        create encrypted env KVM if missing, then upsert the entry
+  product-get NAME | product-list | product-delete NAME --yes
+  developer-create EMAIL [--first F --last L --username U --attr k=v]   (idempotent)
+  developer-get EMAIL | developer-list | developer-delete EMAIL --yes
+  app-create DEVELOPER_EMAIL APP --product P [--product P2] [--create-developer] [--callback URL]
+             [--key-expires-in-ms MS] [--attr k=v] [--show-secret] [--credentials-out FILE]
+                                         create an app (or add missing products to its key) and print the API key;
+                                         the secret is masked unless --show-secret / written 0600 to --credentials-out
+  app-get DEVELOPER_EMAIL APP | app-list DEVELOPER_EMAIL | app-delete DEVELOPER_EMAIL APP --yes
+  key-approve | key-revoke DEVELOPER_EMAIL APP KEY [--product P]   approve/revoke a key (or one product on it)
+Config (KVMs: --env ENV [default], --org-scope, or --proxy NAME)
+  kvm-put MAP KEY VALUE                  create the encrypted KVM if missing, then upsert the entry
                                          (VALUE "-" reads stdin, so secrets stay out of shell history)
+  kvm-list | kvm-entries MAP [--show] | kvm-get MAP KEY [--show]   values masked unless --show
+  kvm-delete-entry MAP KEY --yes | kvm-delete MAP --yes
+Config (target servers, per environment)
   targetserver-apply FILE.json --env ENV create or update a target server
+  targetserver-list --env ENV | targetserver-get NAME --env ENV | targetserver-delete NAME --env ENV --yes
   flowhook-attach HOOK SHAREDFLOW --env ENV
                                          HOOK = PreProxyFlowHook|PostProxyFlowHook|PreTargetFlowHook|PostTargetFlowHook
   debugmask-get --env ENV                show the environment debug mask (data masking in trace sessions)
@@ -350,19 +363,210 @@ def cmd_product_get(api, o):
     print(json.dumps(api.req("GET", f"/apiproducts/{urllib.parse.quote(o.name)}"), indent=2))
 
 
+def kvm_base(o):
+    if getattr(o, "proxy", None):
+        return f"/apis/{o.proxy}/keyvaluemaps", f"proxy {o.proxy}"
+    if getattr(o, "org_scope", False):
+        return "/keyvaluemaps", "org"
+    if not o.env:
+        sys.exit("KVM commands need --env ENV, --org-scope or --proxy NAME")
+    return f"/environments/{o.env}/keyvaluemaps", f"env {o.env}"
+
+
+def mask(v, show):
+    v = "" if v is None else str(v)
+    return v if show or len(v) <= 4 else v[:2] + "*" * min(len(v) - 4, 12) + v[-2:]
+
+
+def need_yes(o, what):
+    if not getattr(o, "yes", False):
+        sys.exit(f"refusing to {what} without --yes")
+
+
+def q(v):
+    return urllib.parse.quote(v, safe="@")
+
+
 def cmd_kvm_put(api, o):
     value = sys.stdin.read().rstrip("\n") if o.value == "-" else o.value
-    base = f"/environments/{o.env}/keyvaluemaps"
+    base, scope = kvm_base(o)
     maps = api.req("GET", base) or []
     if o.map not in (maps if isinstance(maps, list) else []):
         api.req("POST", base, body={"name": o.map, "encrypted": True})
-        print(f"Created encrypted KVM '{o.map}' in {o.env}")
-    entry = api.req("GET", f"{base}/{o.map}/entries/{urllib.parse.quote(o.key)}", ok404=True)
+        print(f"Created encrypted KVM '{o.map}' ({scope})")
+    entry = api.req("GET", f"{base}/{o.map}/entries/{q(o.key)}", ok404=True)
     if entry is None:
         api.req("POST", f"{base}/{o.map}/entries", body={"name": o.key, "value": value})
     else:
-        api.req("PUT", f"{base}/{o.map}/entries/{urllib.parse.quote(o.key)}", body={"name": o.key, "value": value})
-    print(f"Set {o.map}/{o.key} in {o.env}")
+        api.req("PUT", f"{base}/{o.map}/entries/{q(o.key)}", body={"name": o.key, "value": value})
+    print(f"Set {o.map}/{o.key} ({scope})")
+
+
+def cmd_kvm_list(api, o):
+    base, scope = kvm_base(o)
+    for m in api.req("GET", base) or []:
+        print(m)
+
+
+def cmd_kvm_entries(api, o):
+    base, _ = kvm_base(o)
+    token = None
+    while True:
+        d = api.req("GET", f"{base}/{o.map}/entries", query={"pageSize": 100, "pageToken": token}) or {}
+        for e in d.get("keyValueEntries", []):
+            print(f"{e.get('name')}\t{mask(e.get('value'), o.show)}")
+        token = d.get("nextPageToken")
+        if not token:
+            break
+
+
+def cmd_kvm_get(api, o):
+    base, _ = kvm_base(o)
+    e = api.req("GET", f"{base}/{o.map}/entries/{q(o.key)}")
+    print(mask(e.get("value"), o.show))
+
+
+def cmd_kvm_delete_entry(api, o):
+    need_yes(o, f"delete {o.map}/{o.key}")
+    base, scope = kvm_base(o)
+    api.req("DELETE", f"{base}/{o.map}/entries/{q(o.key)}")
+    print(f"Deleted {o.map}/{o.key} ({scope})")
+
+
+def cmd_kvm_delete(api, o):
+    need_yes(o, f"delete KVM {o.map} and all its entries")
+    base, scope = kvm_base(o)
+    api.req("DELETE", f"{base}/{o.map}")
+    print(f"Deleted KVM {o.map} ({scope})")
+
+
+def attrs(pairs):
+    out = []
+    for p in pairs or []:
+        if "=" not in p:
+            sys.exit(f"--attr expects key=value, got '{p}'")
+        k, v = p.split("=", 1)
+        out.append({"name": k, "value": v})
+    return out
+
+
+def cmd_product_list(api, o):
+    d = api.req("GET", "/apiproducts", query={"expand": "true"}) or {}
+    for p in d.get("apiProduct", []):
+        print(f"{p.get('name')}\t{','.join(p.get('environments', []))}\t{p.get('approvalType', '')}")
+
+
+def cmd_product_delete(api, o):
+    need_yes(o, f"delete API product {o.name} (apps lose access through it)")
+    api.req("DELETE", f"/apiproducts/{q(o.name)}")
+    print(f"Deleted API product '{o.name}'")
+
+
+def ensure_developer(api, email, first=None, last=None, username=None, attributes=None):
+    if api.req("GET", f"/developers/{q(email)}", ok404=True):
+        return False
+    local = email.split("@")[0]
+    api.req("POST", "/developers", body={
+        "email": email, "firstName": first or local, "lastName": last or "Developer",
+        "userName": username or local, "attributes": attrs(attributes)})
+    return True
+
+
+def cmd_developer_create(api, o):
+    created = ensure_developer(api, o.email, o.first, o.last, o.username, o.attr)
+    print(f"{'Created' if created else 'Exists'}: developer {o.email}")
+
+
+def cmd_developer_get(api, o):
+    print(json.dumps(api.req("GET", f"/developers/{q(o.email)}"), indent=2))
+
+
+def cmd_developer_list(api, o):
+    d = api.req("GET", "/developers", query={"expand": "true"}) or {}
+    for dev in d.get("developer", []):
+        print(f"{dev.get('email')}\t{dev.get('status', '')}\tapps={len(dev.get('apps', []))}")
+
+
+def cmd_developer_delete(api, o):
+    need_yes(o, f"delete developer {o.email} and all of their apps and keys")
+    api.req("DELETE", f"/developers/{q(o.email)}")
+    print(f"Deleted developer {o.email}")
+
+
+def print_app(app, show_secret=False, out_file=None):
+    print(f"App {app.get('name')} ({app.get('status', 'approved')}) appId={app.get('appId', '')}")
+    creds = app.get("credentials", [])
+    for c in creds:
+        prods = ", ".join(f"{p.get('apiproduct')}[{p.get('status')}]" for p in c.get("apiProducts", []))
+        print(f"  key={c.get('consumerKey')} secret={mask(c.get('consumerSecret'), show_secret)} "
+              f"status={c.get('status', '')} products={prods}")
+    if out_file and creds:
+        fd = os.open(out_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"app": app.get("name"), "consumerKey": creds[0].get("consumerKey"),
+                       "consumerSecret": creds[0].get("consumerSecret")}, f, indent=2)
+        print(f"  credentials written to {out_file} (mode 600)")
+
+
+def cmd_app_create(api, o):
+    if o.create_developer and ensure_developer(api, o.developer):
+        print(f"Created developer {o.developer}")
+    base = f"/developers/{q(o.developer)}/apps"
+    app = api.req("GET", f"{base}/{q(o.app)}", ok404=True)
+    if app is None:
+        body = {"name": o.app, "apiProducts": o.product, "attributes": attrs(o.attr)}
+        if o.callback:
+            body["callbackUrl"] = o.callback
+        if o.key_expires_in_ms:
+            body["keyExpiresIn"] = str(o.key_expires_in_ms)
+        app = api.req("POST", base, body=body)
+        print(f"Created app {o.app} for {o.developer}")
+    else:
+        creds = app.get("credentials", [])
+        if not creds:
+            sys.exit(f"app {o.app} has no credentials; create a key in the UI or delete and recreate the app")
+        have = {p.get("apiproduct") for p in creds[0].get("apiProducts", [])}
+        missing = [p for p in o.product if p not in have]
+        if missing:
+            api.req("POST", f"{base}/{q(o.app)}/keys/{creds[0]['consumerKey']}", body={"apiProducts": missing})
+            print(f"Added {', '.join(missing)} to the key of {o.app}")
+            app = api.req("GET", f"{base}/{q(o.app)}")
+        else:
+            print(f"App {o.app} already has {', '.join(o.product)}")
+    print_app(app, o.show_secret, o.credentials_out)
+
+
+def cmd_app_get(api, o):
+    print_app(api.req("GET", f"/developers/{q(o.developer)}/apps/{q(o.app)}"), o.show_secret)
+
+
+def cmd_app_list(api, o):
+    d = api.req("GET", f"/developers/{q(o.developer)}/apps", query={"expand": "true"}) or {}
+    for app in d.get("app", []):
+        prods = sorted({p.get("apiproduct") for c in app.get("credentials", []) for p in c.get("apiProducts", [])})
+        print(f"{app.get('name')}\t{app.get('status', '')}\t{','.join(prods)}")
+
+
+def cmd_app_delete(api, o):
+    need_yes(o, f"delete app {o.app} (its keys stop working immediately)")
+    api.req("DELETE", f"/developers/{q(o.developer)}/apps/{q(o.app)}")
+    print(f"Deleted app {o.app}")
+
+
+def key_action(api, o, action):
+    path = f"/developers/{q(o.developer)}/apps/{q(o.app)}/keys/{o.key}"
+    if o.product:
+        path += f"/apiproducts/{q(o.product)}"
+    api.req("POST", path, query={"action": action})
+    print(f"{action.capitalize()}d key {o.key[:6]}…" + (f" for product {o.product}" if o.product else ""))
+
+
+def cmd_key_approve(api, o):
+    key_action(api, o, "approve")
+
+
+def cmd_key_revoke(api, o):
+    key_action(api, o, "revoke")
 
 
 def cmd_targetserver_apply(api, o):
@@ -374,6 +578,21 @@ def cmd_targetserver_apply(api, o):
     else:
         api.req("POST", base, body=ts)
         print(f"Created target server '{ts['name']}' in {o.env}")
+
+
+def cmd_targetserver_list(api, o):
+    for t in api.req("GET", f"/environments/{o.env}/targetservers") or []:
+        print(t)
+
+
+def cmd_targetserver_get(api, o):
+    print(json.dumps(api.req("GET", f"/environments/{o.env}/targetservers/{o.name}"), indent=2))
+
+
+def cmd_targetserver_delete(api, o):
+    need_yes(o, f"delete target server {o.name} in {o.env} (proxies using it will fail)")
+    api.req("DELETE", f"/environments/{o.env}/targetservers/{o.name}")
+    print(f"Deleted target server '{o.name}' in {o.env}")
 
 
 def cmd_flowhook_attach(api, o):
@@ -464,10 +683,48 @@ def main():
     p.add_argument("--env", default=env_default, required=env_default is None); p.add_argument("--rev")
     p = sp("product-apply", cmd_product_apply); p.add_argument("file"); p.add_argument("--env", default=env_default)
     p = sp("product-get", cmd_product_get); p.add_argument("name")
-    p = sp("kvm-put", cmd_kvm_put); p.add_argument("map"); p.add_argument("key"); p.add_argument("value")
-    p.add_argument("--env", default=env_default, required=env_default is None)
+    sp("product-list", cmd_product_list)
+    p = sp("product-delete", cmd_product_delete); p.add_argument("name"); p.add_argument("--yes", action="store_true")
+
+    p = sp("developer-create", cmd_developer_create); p.add_argument("email")
+    p.add_argument("--first"); p.add_argument("--last"); p.add_argument("--username")
+    p.add_argument("--attr", action="append", default=[])
+    p = sp("developer-get", cmd_developer_get); p.add_argument("email")
+    sp("developer-list", cmd_developer_list)
+    p = sp("developer-delete", cmd_developer_delete); p.add_argument("email"); p.add_argument("--yes", action="store_true")
+
+    p = sp("app-create", cmd_app_create); p.add_argument("developer"); p.add_argument("app")
+    p.add_argument("--product", action="append", required=True); p.add_argument("--create-developer", action="store_true")
+    p.add_argument("--callback"); p.add_argument("--key-expires-in-ms", type=int)
+    p.add_argument("--attr", action="append", default=[]); p.add_argument("--show-secret", action="store_true")
+    p.add_argument("--credentials-out")
+    p = sp("app-get", cmd_app_get); p.add_argument("developer"); p.add_argument("app")
+    p.add_argument("--show-secret", action="store_true")
+    p = sp("app-list", cmd_app_list); p.add_argument("developer")
+    p = sp("app-delete", cmd_app_delete); p.add_argument("developer"); p.add_argument("app")
+    p.add_argument("--yes", action="store_true")
+    for name, fn in (("key-approve", cmd_key_approve), ("key-revoke", cmd_key_revoke)):
+        p = sp(name, fn); p.add_argument("developer"); p.add_argument("app"); p.add_argument("key")
+        p.add_argument("--product")
+
+    def kvm_scope(p):
+        p.add_argument("--env", default=env_default)
+        p.add_argument("--org-scope", action="store_true")
+        p.add_argument("--proxy")
+    p = sp("kvm-put", cmd_kvm_put); p.add_argument("map"); p.add_argument("key"); p.add_argument("value"); kvm_scope(p)
+    p = sp("kvm-list", cmd_kvm_list); kvm_scope(p)
+    p = sp("kvm-entries", cmd_kvm_entries); p.add_argument("map"); p.add_argument("--show", action="store_true"); kvm_scope(p)
+    p = sp("kvm-get", cmd_kvm_get); p.add_argument("map"); p.add_argument("key"); p.add_argument("--show", action="store_true"); kvm_scope(p)
+    p = sp("kvm-delete-entry", cmd_kvm_delete_entry); p.add_argument("map"); p.add_argument("key")
+    p.add_argument("--yes", action="store_true"); kvm_scope(p)
+    p = sp("kvm-delete", cmd_kvm_delete); p.add_argument("map"); p.add_argument("--yes", action="store_true"); kvm_scope(p)
     p = sp("targetserver-apply", cmd_targetserver_apply); p.add_argument("file")
     p.add_argument("--env", default=env_default, required=env_default is None)
+    p = sp("targetserver-list", cmd_targetserver_list); p.add_argument("--env", default=env_default, required=env_default is None)
+    p = sp("targetserver-get", cmd_targetserver_get); p.add_argument("name")
+    p.add_argument("--env", default=env_default, required=env_default is None)
+    p = sp("targetserver-delete", cmd_targetserver_delete); p.add_argument("name")
+    p.add_argument("--env", default=env_default, required=env_default is None); p.add_argument("--yes", action="store_true")
     p = sp("flowhook-attach", cmd_flowhook_attach)
     p.add_argument("hook", choices=["PreProxyFlowHook", "PostProxyFlowHook", "PreTargetFlowHook", "PostTargetFlowHook"])
     p.add_argument("sharedflow_name"); p.add_argument("--env", default=env_default, required=env_default is None)

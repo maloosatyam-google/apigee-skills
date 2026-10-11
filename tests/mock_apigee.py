@@ -16,6 +16,9 @@ class State:
         self.products = {}
         self.kvms = {}                                   # (env, map) -> {key: value}
         self.targetservers = {}
+        self.developers = {}
+        self.apps = {}          # (email, app) -> app
+        self.keys = 0
         self.flowhooks = {}
         self.debugmasks = {}
         self.calls = []
@@ -97,43 +100,114 @@ def make_handler(st):
                 if method == "DELETE":
                     st.deployments.pop((coll, env, name), None)
                     return self._send(200, {})
+            nf = lambda: self._send(404, {"error": {"message": "nf"}})  # noqa: E731
             # products
-            if path == "/apiproducts" and method == "POST":
-                d = json.loads(body)
-                st.products[d["name"]] = d
-                return self._send(201, d)
+            if path == "/apiproducts":
+                if method == "POST":
+                    d = json.loads(body)
+                    st.products[d["name"]] = d
+                    return self._send(201, d)
+                return self._send(200, {"apiProduct": list(st.products.values())})
             mm = re.match(r"^/apiproducts/(.+)$", path)
             if mm:
                 n = mm.group(1)
+                if n not in st.products and method != "PUT":
+                    return nf()
                 if method == "GET":
-                    return self._send(200, st.products[n]) if n in st.products else self._send(404, {"error": {"message": "nf"}})
+                    return self._send(200, st.products[n])
                 if method == "PUT":
                     st.products[n] = json.loads(body)
                     return self._send(200, st.products[n])
-            # kvms
-            mm = re.match(r"^/environments/([^/]+)/keyvaluemaps$", path)
+                if method == "DELETE":
+                    return self._send(200, st.products.pop(n))
+            # developers / apps / keys
+            if path == "/developers":
+                if method == "POST":
+                    d = json.loads(body)
+                    st.developers[d["email"]] = dict(d, status="active")
+                    return self._send(201, d)
+                return self._send(200, {"developer": list(st.developers.values())})
+            mm = re.match(r"^/developers/([^/]+)$", path)
             if mm:
-                env = mm.group(1)
-                if method == "GET":
-                    return self._send(200, [m for (e, m) in st.kvms if e == env])
-                d = json.loads(body)
-                st.kvms[(env, d["name"])] = {}
-                return self._send(201, d)
-            mm = re.match(r"^/environments/([^/]+)/keyvaluemaps/([^/]+)/entries(?:/(.+))?$", path)
+                e = mm.group(1)
+                if e not in st.developers:
+                    return nf()
+                if method == "DELETE":
+                    st.apps = {k: v for k, v in st.apps.items() if k[0] != e}
+                    return self._send(200, st.developers.pop(e))
+                return self._send(200, st.developers[e])
+            mm = re.match(r"^/developers/([^/]+)/apps$", path)
             if mm:
-                env, mp, key = mm.groups()
-                kv = st.kvms[(env, mp)]
+                e = mm.group(1)
+                if e not in st.developers:
+                    return nf()
+                if method == "POST":
+                    d = json.loads(body)
+                    st.keys += 1
+                    app = {"name": d["name"], "appId": f"app-{st.keys}", "status": "approved",
+                           "credentials": [{"consumerKey": f"KEY{st.keys:04d}abcdefgh", "consumerSecret": f"SECRET{st.keys:04d}xyz",
+                                            "status": "approved",
+                                            "apiProducts": [{"apiproduct": x, "status": "approved"} for x in d.get("apiProducts", [])]}]}
+                    st.apps[(e, d["name"])] = app
+                    return self._send(201, app)
+                return self._send(200, {"app": [v for k, v in st.apps.items() if k[0] == e]})
+            mm = re.match(r"^/developers/([^/]+)/apps/([^/]+)$", path)
+            if mm:
+                if mm.groups() not in st.apps:
+                    return nf()
+                if method == "DELETE":
+                    return self._send(200, st.apps.pop(mm.groups()))
+                return self._send(200, st.apps[mm.groups()])
+            mm = re.match(r"^/developers/([^/]+)/apps/([^/]+)/keys/([^/]+)(?:/apiproducts/([^/]+))?$", path)
+            if mm:
+                e, a, k, prod = mm.groups()
+                cred = next(c for c in st.apps[(e, a)]["credentials"] if c["consumerKey"] == k)
+                action = q.get("action")
+                if action and prod:
+                    next(x for x in cred["apiProducts"] if x["apiproduct"] == prod)["status"] = action + "d"
+                elif action:
+                    cred["status"] = action + "d"
+                else:
+                    cred["apiProducts"] += [{"apiproduct": x, "status": "approved"} for x in json.loads(body)["apiProducts"]]
+                return self._send(200, cred)
+            # kvms (env / org / proxy scope); scope id: env name, "_org" or "proxy:<name>"
+            mm = re.match(r"^(?:/environments/([^/]+)|/apis/([^/]+))?/keyvaluemaps(?:/([^/]+))?(/entries(?:/(.+))?)?$", path)
+            if mm:
+                env, proxy, mp, entries, key = mm.groups()
+                scope = env or (f"proxy:{proxy}" if proxy else "_org")
+                if mp is None:
+                    if method == "GET":
+                        return self._send(200, [m for (sc, m) in st.kvms if sc == scope])
+                    d = json.loads(body)
+                    st.kvms[(scope, d["name"])] = {}
+                    return self._send(201, d)
+                if (scope, mp) not in st.kvms:
+                    return nf()
+                kv = st.kvms[(scope, mp)]
+                if not entries:
+                    if method == "DELETE":
+                        st.kvms.pop((scope, mp))
+                        return self._send(200, {"name": mp})
+                    return self._send(200, {"name": mp})
+                if key is None and method == "GET":
+                    return self._send(200, {"keyValueEntries": [{"name": k, "value": v} for k, v in kv.items()]})
                 if method == "GET":
-                    return self._send(200, {"name": key, "value": kv[key]}) if key in kv else self._send(404, {"error": {"message": "nf"}})
+                    return self._send(200, {"name": key, "value": kv[key]}) if key in kv else nf()
+                if method == "DELETE":
+                    return self._send(200, {"name": key, "value": kv.pop(key)}) if key in kv else nf()
                 d = json.loads(body)
                 kv[d["name"]] = d["value"]
                 return self._send(200, d)
-            # target servers / flow hooks
+            # target servers
             mm = re.match(r"^/environments/([^/]+)/targetservers(?:/(.+))?$", path)
             if mm:
                 env, n = mm.groups()
+                if n is None and method == "GET":
+                    return self._send(200, [k[1] for k in st.targetservers if k[0] == env])
                 if method == "GET":
-                    return self._send(200, st.targetservers[(env, n)]) if (env, n) in st.targetservers else self._send(404, {"error": {"message": "nf"}})
+                    return self._send(200, st.targetservers[(env, n)]) if (env, n) in st.targetservers else nf()
+                if method == "DELETE":
+                    return self._send(200, st.targetservers.pop((env, n))) if (env, n) in st.targetservers else nf()
                 d = json.loads(body)
                 st.targetservers[(env, d["name"])] = d
                 return self._send(200, d)

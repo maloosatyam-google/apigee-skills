@@ -53,8 +53,9 @@ python3 $SK/apigee-proxy-builder/scripts/validate_bundle.py ./orders-v1 --strict
 bash    $SK/apigee-proxy-builder/scripts/deploy_bundle.sh ./orders-v1 --org $ORG --env $ENV
 
 # 3. API product + developer app -> key
-python3 $SK/apigee-proxy-lifecycle/scripts/apigee_ctl.py product-apply ./orders-v1/api_product.json --env $ENV
-# create a developer + app subscribed to "orders-v1-standard" (Apigee UI, apigeecli, or the Apigee API), then:
+C="python3 $SK/apigee-proxy-lifecycle/scripts/apigee_ctl.py"
+$C product-apply ./orders-v1/api_product.json --env $ENV
+$C app-create dev@example.com orders-tester --product orders-v1-standard --create-developer   # prints KEY
 curl -i https://$HOST/orders/v1/ping                                   # 200 without a key (--health)
 curl -i https://$HOST/orders/v1/orders -H "x-apikey: $KEY"             # 200
 curl -i https://$HOST/orders/v1/nope   -H "x-apikey: $KEY"             # 404 JSON (OAS catch-all)

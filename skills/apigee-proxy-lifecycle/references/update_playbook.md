@@ -18,6 +18,8 @@
 | Require a scope on writes (OAuth) | policy `OA-VerifyWriteScope` (`<Scope>write</Scope>`) → attach in the write flows after the PreFlow verification |
 | New backend host per environment | create TargetServers (`targetserver-apply`), switch target to `<LoadBalancer><Server name=.../>` |
 | Expose a new operation | update the OAS resource (`add-resource --type oas`, `--force` semantics: overwrite the file), `add-flow getInvoice --condition '(proxy.pathsuffix MatchesPath "/invoices/*") and (request.verb = "GET")' --before NotFound`, attach `OAS-ValidateRequest`, add the path to the product |
+| Onboard a partner | `product-apply` (partner product, `approvalType: manual` if reviewed) → `app-create EMAIL APP --product P --create-developer --credentials-out FILE` → `key-approve` after review |
+| Rotate a backend secret | `kvm-put MAP KEY - --env E` (stdin) → no redeploy; mind `ExpiryTimeInSecs` caching in the KVM policy |
 | Change the base path (v2) | prefer a **new proxy** (`orders-v2`) so v1 clients keep working; otherwise `set-basepath` |
 
 ### AI Gateway proxy

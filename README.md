@@ -10,7 +10,7 @@ use cases:
 | **API** Management (REST) | [`apigee-api-proxy`](skills/apigee-api-proxy/SKILL.md) | `scaffold_api_proxy.py` (API key / OAuth / JWT, OAS validation, quota, cache, CORS, JSON/XML threat protection, backend mTLS), `scaffold_shared_flow.py` |
 | **AI** Gateway (LLM) | [`apigee-ai-gateway`](skills/apigee-ai-gateway/SKILL.md) | `scaffold_ai_gateway.py` (Gemini + Claude, `/auto` routing, Model Armor, token quota, semantic cache) |
 | **MCP** Tools Gateway | [`apigee-mcp-gateway`](skills/apigee-mcp-gateway/SKILL.md) | `scaffold_mcp_proxy.py` (per-tool products, argument limits, keyless handshake) |
-| Update existing proxies | [`apigee-proxy-lifecycle`](skills/apigee-proxy-lifecycle/SKILL.md) | `apigee_ctl.py` (export, diff, update, rollback, products, KVM, target servers, flow hooks, trace), `bundle_edit.py` |
+| Update existing proxies | [`apigee-proxy-lifecycle`](skills/apigee-proxy-lifecycle/SKILL.md) | `apigee_ctl.py` (export, diff, update, rollback, products, developers, apps & keys, KVMs, target servers, flow hooks, trace masks, trace), `bundle_edit.py` |
 
 Everything is **stdlib Python 3.9+ / bash**: no repo, framework, `apigeecli` or Maven plugin required. Auth uses
 `gcloud auth print-access-token` (or `$APIGEE_TOKEN`).
@@ -58,6 +58,7 @@ python3 $S/apigee-api-proxy/scripts/scaffold_api_proxy.py --out ./orders-v1 --na
   --oas examples/specs/orders-v1.json --health
 python3 $S/apigee-proxy-lifecycle/scripts/apigee_ctl.py update ./orders-v1        # validate+import+deploy+wait
 python3 $S/apigee-proxy-lifecycle/scripts/apigee_ctl.py product-apply ./orders-v1/api_product.json --env $APIGEE_ENV
+python3 $S/apigee-proxy-lifecycle/scripts/apigee_ctl.py app-create me@example.com orders-tester --product orders-v1-standard --create-developer
 
 # AI gateway (Gemini + Claude + auto routing + token quota)
 python3 $S/apigee-ai-gateway/scripts/scaffold_ai_gateway.py --out ./ai-gateway-v1 --project my-proj \
@@ -104,7 +105,7 @@ tests/                       offline test suite + mock Apigee management API
 ## Development
 
 ```bash
-make test       # 28 offline tests (Terraform module tests run when terraform is installed): scaffolds, validator bug detection, bundle edits, lifecycle vs mock API, JS converters
+make test       # 31 offline tests (Terraform module tests run when terraform is installed): scaffolds, validator bug detection, bundle edits, lifecycle vs mock API, JS converters
 make examples   # generate + strictly validate one bundle of each kind into ./build
 make lint
 ```
