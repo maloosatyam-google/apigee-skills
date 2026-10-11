@@ -206,8 +206,74 @@ def main():
                 err(f"policy '{name}' references {scheme}://{ref} but resources/{scheme}/{ref} is missing")
 
     security_checks(root_dir, kind, policies, attached)
+    best_practice_checks(root_dir, policies, endpoints)
     ai_checks(policies, all_conditions)
     return report(strict, as_json)
+
+
+def best_practice_checks(root_dir, policies, endpoints):
+    """Checks from the official 'Best practices for API proxy design and development' page."""
+    # Bundle size limit: 15 MB (compressed bundle)
+    import io
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for d, _, files in os.walk(root_dir):
+            for f in files:
+                z.write(os.path.join(d, f), os.path.relpath(os.path.join(d, f), root_dir))
+    size_mb = len(buf.getvalue()) / (1024 * 1024)
+    if size_mb > 15:
+        err(f"bundle is {size_mb:.1f} MB zipped - Apigee rejects bundles over 15 MB")
+
+    # RouteRules: with several, exactly one unconditioned default and it must be last
+    for label, ep in endpoints:
+        rrs = ep.findall("RouteRule")
+        if len(rrs) > 1:
+            defaults = [i for i, rr in enumerate(rrs) if not text(rr, "Condition")]
+            if len(defaults) != 1:
+                err(f"{label}: {len(rrs)} RouteRules need exactly one default (no <Condition>), found {len(defaults)}")
+            elif defaults[0] != len(rrs) - 1:
+                err(f"{label}: default RouteRule '{rrs[defaults[0]].get('name')}' must be last "
+                    f"(RouteRules are evaluated top-down; later rules are unreachable)")
+
+    # Resource files nobody references (slow import/deploy)
+    res_dir = os.path.join(root_dir, "resources")
+    blob = " ".join(ET.tostring(el, encoding="unicode") for el in policies.values())
+    if os.path.isdir(res_dir):
+        for sub in os.listdir(res_dir):
+            sd = os.path.join(res_dir, sub)
+            if not os.path.isdir(sd):
+                continue
+            for f in os.listdir(sd):
+                if not f.startswith(".") and f"{sub}://{f}" not in blob:
+                    warn(f"resources/{sub}/{f} is not referenced by any policy - remove unused resources")
+            if sub == "jsc":
+                for f in os.listdir(sd):
+                    p = os.path.join(sd, f)
+                    if os.path.isfile(p) and "httpClient" in open(p, encoding="utf-8", errors="ignore").read():
+                        warn(f"resources/jsc/{f} makes HTTP calls (httpClient) - use a ServiceCallout policy instead")
+
+    by_type = {}
+    for n, el in policies.items():
+        by_type.setdefault(el.tag, []).append((n, el))
+    for n, el in by_type.get("Script", []):   # PythonScript policies are <Script> with a py:// resource
+        if "py://" in (text(el, "ResourceURL") or ""):
+            warn(f"'{n}' is a PythonScript policy - prefer JavaScript (Python is interpreted and slower)")
+
+    caches = by_type.get("ResponseCache", [])
+    for n, el in caches:
+        skip = text(el, "SkipCachePopulation") or ""
+        if "response.status.code" not in skip or "request.verb" not in skip:
+            warn(f"ResponseCache '{n}': <SkipCachePopulation> should skip non-200 and non-GET responses, e.g. "
+                 f"response.status.code != 200 or request.verb != \"GET\"")
+    if len(caches) > 1:
+        resources = [text(el, "CacheResource") for _, el in caches]
+        if len(set(resources)) != len(resources):
+            warn("several ResponseCache policies share a <CacheResource> (or have none) - give each its own")
+
+    for n, el in by_type.get("ServiceCallout", []):
+        url = text(el, "./HTTPTargetConnection/URL") or ""
+        if url.startswith("{"):
+            err(f"ServiceCallout '{n}': the URL protocol cannot come from a variable ({url}) - use https://{{host}}{{path}}")
 
 
 def security_checks(root_dir, kind, policies, attached):

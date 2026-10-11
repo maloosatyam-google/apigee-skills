@@ -33,7 +33,8 @@ All five skills live in this repo and share this skill's validator and reference
 | Hand-authoring policies, flows, conditions or debugging any proxy | this skill | references below + `validate_bundle.py` |
 
 **Golden rule for every task:** generate or edit, then `validate_bundle.py`, then (for an existing proxy) `apigee_ctl.py diff`,
-then deploy. Never deploy a bundle that fails validation.
+then deploy. Never deploy a bundle that fails validation. Review designs against
+[best_practices_checklist.md](references/best_practices_checklist.md) (Google's official best practices; items marked R are not machine-checkable).
 
 ---
 
@@ -268,6 +269,7 @@ CLIENT RESPONSE SENT
 | [**`javascript_development.md`**](references/javascript_development.md) | JavaScript object model, patterns, best practices |
 | [**`shared_flows.md`**](references/shared_flows.md) | Creating and consuming shared flows, flow hooks |
 | [**`advanced_patterns.md`**](references/advanced_patterns.md) | Proxy chaining, composite APIs, circuit breaker, AI/LLM token policies |
+| [**`best_practices_checklist.md`**](references/best_practices_checklist.md) | **Official Apigee proxy design & development best practices** as a review checklist, mapped to validator checks |
 | [**`anti_patterns_and_best_practices.md`**](references/anti_patterns_and_best_practices.md) | Common mistakes, production best practices |
 | [**`debugging_and_performance.md`**](references/debugging_and_performance.md) | Debug sessions, trace methodology, performance optimization |
 | [**`multi_tenant_patterns.md`**](references/multi_tenant_patterns.md) | Multi-tenant routing, isolation, per-tenant config and rate limiting |
@@ -307,6 +309,9 @@ What `validate_bundle.py` catches, beyond XML and reference checks:
 - `DataCapture` `default="{var}"`, which is recorded literally
 - Legacy or invalid AI syntax (`<CacheConfig>`, `<Source>` in the Sanitize policies, missing `<ModelArmor><TemplateName>`)
 - Conditions that reference `parsepayload.<name>.*` without a matching ParsePayload policy
+- Official best practices: bundle > 15 MB, default RouteRule not last / not unique, unreferenced resources,
+  ResponseCache populating non-200/non-GET responses or sharing a CacheResource, `httpClient` in JavaScript,
+  PythonScript usage, ServiceCallout URLs whose protocol comes from a variable
 
 > [!TIP]
 > If a repository provides its own wrappers or CI checks, run those too for repository conventions; the skill

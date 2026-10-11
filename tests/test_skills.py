@@ -215,6 +215,48 @@ class ValidatorCatchesBugs(Base):
         self.assertIn("hardcoded Google API key", r.stdout)
 
 
+class ValidatorBestPractices(Base):
+    """Checks derived from the official Apigee proxy design best-practices page."""
+
+    def _api(self, **extra):
+        out = self.p("api")
+        py(API, "--out", out, "--name", "o", "--basepath", "/o", "--target", "https://t", "--cache-ttl", "30")
+        return out
+
+    def test_scaffold_follows_cache_guidance(self):
+        self.validate(self._api())
+
+    def test_default_route_rule_must_be_last(self):
+        out = self._api()
+        f = os.path.join(out, "apiproxy/proxies/default.xml")
+        txt = open(f).read()
+        default = '  <RouteRule name="default">\n    <TargetEndpoint>default</TargetEndpoint>\n  </RouteRule>\n'
+        extra = '  <RouteRule name="other">\n    <Condition>request.verb = "HEAD"</Condition>\n  </RouteRule>\n'
+        with open(f, "w") as fh:
+            fh.write(txt.replace(default, default + extra))
+        r = py(VALIDATE, out, ok=False)
+        self.assertIn("must be last", r.stdout)
+
+    def test_cache_population_and_python_and_httpclient_and_callout_url(self):
+        out = self._api()
+        pol = os.path.join(out, "apiproxy/policies")
+        f = os.path.join(pol, "RC-ResponseCache.xml")
+        txt = open(f).read().replace(' or request.verb != "GET"', "")
+        with open(f, "w") as fh:
+            fh.write(txt)
+        with open(os.path.join(pol, "SC-Bad.xml"), "w") as fh:
+            fh.write('<ServiceCallout name="SC-Bad"><Response>r</Response><HTTPTargetConnection>'
+                     '<URL>{flow.url}</URL></HTTPTargetConnection></ServiceCallout>')
+        os.makedirs(os.path.join(out, "apiproxy/resources/jsc"))
+        with open(os.path.join(out, "apiproxy/resources/jsc/unused.js"), "w") as fh:
+            fh.write("httpClient.get('https://x');")
+        r = py(VALIDATE, out, ok=False)
+        self.assertIn("SkipCachePopulation", r.stdout)
+        self.assertIn("URL protocol cannot come from a variable", r.stdout)
+        self.assertIn("not referenced by any policy", r.stdout)
+        self.assertIn("httpClient", r.stdout)
+
+
 class BundleEdit(Base):
     def test_update_existing_proxy_locally(self):
         out = self.p("orders")

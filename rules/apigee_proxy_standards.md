@@ -55,6 +55,17 @@ Every file in `policies/` is listed in the manifest `<Policies>` and attached by
 - Gateway-generated JSON-RPC responses echo the request `id` with its original JSON type; business limits return
   `result.isError=true` (HTTP 403) with a machine-readable code.
 
-## 7. Change the right layer
+## 7. Official best practices (summary)
+Full list: `skills/apigee-proxy-builder/references/best_practices_checklist.md`.
+- Never call the Apigee management API from a proxy; prefer built-in policies over code (JavaScript > Java > Python).
+- One condition per conditional flow rather than many conditional steps; exactly one default RouteRule, last.
+- TargetServers for environment-specific hosts; bundles under 15 MB; remove unused policies/resources.
+- Fault responses built with AssignMessage in FaultRules/DefaultFaultRule; human-readable messages.
+- ResponseCache: lookup early (request PreFlow), populate late (response PostFlow), skip non-200/non-GET,
+  no client_id in the key unless responses differ per client; never cache CORS responses.
+- Scripts: try/catch, null checks, no HTTP calls (use ServiceCallout); ServiceCallout URL protocol is literal.
+- Threat protection on every production proxy; IP-restrict test environments.
+
+## 8. Change the right layer
 Plans/paths/tools/models → API product. Per-env hosts → TargetServer. Secrets/tunables → encrypted KVM.
 Org-wide policies → shared flow + flow hook. Only behaviour changes need a new proxy revision.

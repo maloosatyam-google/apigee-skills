@@ -114,6 +114,7 @@ Policy syntax: [policies_security.md](../apigee-proxy-builder/references/policie
 [fault_handling.md](../apigee-proxy-builder/references/fault_handling.md),
 [load_balancing_and_routing.md](../apigee-proxy-builder/references/load_balancing_and_routing.md).
 Design guidance and the test matrix: [references/api_proxy_patterns.md](references/api_proxy_patterns.md).
+Official best-practice review list: [best_practices_checklist.md](../apigee-proxy-builder/references/best_practices_checklist.md).
 
 ## Troubleshooting
 | Symptom | Likely cause |

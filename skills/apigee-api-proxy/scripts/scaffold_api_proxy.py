@@ -302,7 +302,7 @@ def main():
     <TimeoutInSec>{o.cache_ttl}</TimeoutInSec>
   </ExpirySettings>
   <SkipCacheLookup>request.header.cache-control = "no-cache"</SkipCacheLookup>
-  <SkipCachePopulation>response.status.code != 200</SkipCachePopulation>
+  <SkipCachePopulation>response.status.code != 200 or request.verb != "GET"</SkipCachePopulation>
   <UseResponseCacheHeaders>false</UseResponseCacheHeaders>
 </ResponseCache>"""
         pre.append(("RC-ResponseCache", cond(PROT, 'request.verb = "GET"')))
