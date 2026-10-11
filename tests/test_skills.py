@@ -21,6 +21,8 @@ MCP = os.path.join(SK, "apigee-mcp-gateway", "scripts", "scaffold_mcp_proxy.py")
 CTL = os.path.join(SK, "apigee-proxy-lifecycle", "scripts", "apigee_ctl.py")
 EDIT = os.path.join(SK, "apigee-proxy-lifecycle", "scripts", "bundle_edit.py")
 DEPLOY = os.path.join(SK, "apigee-proxy-builder", "scripts", "deploy_bundle.sh")
+PROVISION = os.path.join(SK, "apigee-x-provisioning", "scripts", "provision.py")
+TF_MODULE = os.path.join(SK, "apigee-x-provisioning", "terraform")
 SPEC = os.path.join(ROOT, "examples", "specs", "orders-v1.json")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -375,6 +377,52 @@ class Lifecycle(Base):
         with open(mask, "w") as fh:
             json.dump({"bogus": []}, fh)
         self.ctl("debugmask-apply", mask, "--env", "dev", ok=False)
+
+
+class Provisioning(Base):
+    """apigee-x-provisioning wrapper (fake terraform) and Terraform module tests (real terraform, mocked providers)."""
+
+    def _run(self, *args, ok=True):
+        env = dict(os.environ, TERRAFORM=os.path.join(ROOT, "tests", "fake_terraform.py"), FAKE_TF_LOG=self.p("tf.log"))
+        return py(PROVISION, *args, "--workdir", self.p("infra"), env=env, ok=ok)
+
+    def test_defaults_payg_intermediate_analytics(self):
+        self._run("apply", "--project", "my-proj", "--region", "us-central1", "--auto-approve")
+        v = json.load(open(self.p("infra", "terraform.tfvars.json")))
+        self.assertEqual(v["billing_type"], "PAYG")
+        self.assertEqual(v["environments"], {"dev": {}})          # module defaults: INTERMEDIATE + analytics
+        self.assertEqual(v["routing"], "external")
+        log = open(self.p("tf.log")).read()
+        self.assertIn("init -input=false", log)
+        self.assertIn("plan -input=false -out=tfplan", log)
+        self.assertIn("apply -input=false tfplan", log)
+        self.assertIn("APIGEE_ORG=my-proj", open(self.p("infra", "apigee-x.env")).read())
+        self.assertTrue(os.path.isfile(self.p("infra", "main.tf")))
+
+    def test_env_specs_hostnames_and_backend(self):
+        self._run("plan", "--project", "p", "--region", "europe-west1", "--env", "dev",
+                  "--env", "test:BASE:noanalytics@nonprod", "--env", "prod:COMPREHENSIVE",
+                  "--hostname", "prod-group=api.example.com", "--state-bucket", "tf-state")
+        v = json.load(open(self.p("infra", "terraform.tfvars.json")))
+        self.assertEqual(v["environments"]["test"], {"type": "BASE", "analytics": False, "envgroup": "nonprod"})
+        self.assertEqual(v["environments"]["prod"], {"type": "COMPREHENSIVE"})
+        self.assertEqual(v["envgroup_hostnames"], {"prod-group": ["api.example.com"]})
+        self.assertIn('bucket = "tf-state"', open(self.p("infra", "backend.tf")).read())
+        self.assertNotIn("apply", open(self.p("tf.log")).read())
+
+    def test_rejects_bad_input_and_destroy(self):
+        self._run("plan", "--project", "p", "--region", "r", "--env", "dev:HUGE", ok=False)
+        self._run("plan", "--project", "p", "--region", "r", "--routing", "internal", ok=False)
+        self._run("destroy", ok=False)
+
+    @unittest.skipUnless(shutil.which(os.environ.get("TERRAFORM", "terraform")), "terraform not installed")
+    def test_terraform_module(self):
+        tf = shutil.which(os.environ.get("TERRAFORM", "terraform"))
+        work = self.p("mod")
+        shutil.copytree(TF_MODULE, work)
+        run(tf, f"-chdir={work}", "init", "-backend=false", "-input=false")
+        run(tf, f"-chdir={work}", "validate")
+        run(tf, f"-chdir={work}", "test")
 
 
 class DeployScript(Base):

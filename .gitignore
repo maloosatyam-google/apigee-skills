@@ -6,3 +6,9 @@ __pycache__/
 *.pyc
 .DS_Store
 .env
+.terraform/
+.terraform.lock.hcl
+apigee-x-infra/
+*.tfstate*
+tfplan
+apigee-x.env

@@ -3,6 +3,7 @@
 This repo *is* a set of Apigee X agent skills (see `README.md`). When working here:
 
 - Skills live in `skills/<name>/SKILL.md`; frontmatter `name` must equal the folder name.
+- Infrastructure is Terraform (`skills/apigee-x-provisioning/terraform`); keep `terraform fmt` clean and extend its `tests/*.tftest.hcl`.
 - Scripts are Python 3.9+ **stdlib only** (PyYAML optional for YAML specs) or bash; keep them dependency-free.
 - Every scaffold output must pass `skills/apigee-proxy-builder/scripts/validate_bundle.py --strict`.
 - Run `make test` before finishing any change; add tests in `tests/test_skills.py` for new options/checks.

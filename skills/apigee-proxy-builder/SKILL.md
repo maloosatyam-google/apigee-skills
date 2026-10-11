@@ -7,7 +7,7 @@ description: >
   SanitizeUserPrompt/SanitizeModelResponse, SemanticCacheLookup/Populate, ParsePayload,
   MonetizationLimitsCheck, DataCapture, TraceCapture), flows, conditions, endpoints, routing, fault handling,
   JavaScript callouts and shared flows. Start here for any Apigee proxy task; it routes to the specialised
-  apigee-api-proxy, apigee-ai-gateway, apigee-mcp-gateway and apigee-proxy-lifecycle skills.
+  apigee-x-provisioning, apigee-api-proxy, apigee-ai-gateway, apigee-mcp-gateway and apigee-proxy-lifecycle skills.
 ---
 
 # Apigee X API Proxy Development
@@ -22,10 +22,11 @@ Comprehensive skill for building API proxies on Google Cloud's Apigee X platform
 
 ## Skill Map: pick the right companion skill
 
-All five skills live in this repo and share this skill's validator and references.
+All six skills live in this repo and share this skill's validator and references.
 
 | Task | Skill | Fast path |
 |---|---|---|
+| **No Apigee org yet**: provision Apigee X (org, instance, PAYG environments, Analytics, PSC load balancer) with Terraform | [`apigee-x-provisioning`](../apigee-x-provisioning/SKILL.md) | `provision.py plan/apply` |
 | New REST/HTTP API proxy (API key, OAuth, JWT, OAS validation, quota, caching, CORS) or a reusable shared flow | [`apigee-api-proxy`](../apigee-api-proxy/SKILL.md) | `scaffold_api_proxy.py`, `scaffold_shared_flow.py` |
 | LLM / AI Gateway proxy (Gemini, Claude, model routing, Model Armor, token quota, semantic cache, cost) | [`apigee-ai-gateway`](../apigee-ai-gateway/SKILL.md) | `scaffold_ai_gateway.py` |
 | MCP / Tools Gateway proxy (per-tool entitlement, tool-argument limits, keyless handshake) | [`apigee-mcp-gateway`](../apigee-mcp-gateway/SKILL.md) | `scaffold_mcp_proxy.py` |

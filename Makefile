@@ -5,6 +5,7 @@ test:
 
 lint:
 	python3 -m py_compile skills/*/scripts/*.py tests/*.py
+	@command -v terraform >/dev/null && terraform fmt -check -recursive skills/apigee-x-provisioning/terraform || echo "terraform not installed: skipped fmt check"
 	bash -n skills/apigee-proxy-builder/scripts/deploy_bundle.sh install.sh
 
 # Generate one example bundle of each kind into ./build (offline, no Apigee access needed)

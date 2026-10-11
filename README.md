@@ -5,6 +5,7 @@ use cases:
 
 | Use case | Skill | What you get |
 |---|---|---|
+| **Provision Apigee X** (Terraform) | [`apigee-x-provisioning`](skills/apigee-x-provisioning/SKILL.md) | Terraform module + `provision.py`: non-peered paid org, **PAYG INTERMEDIATE env + Analytics** by default, CMEK, PSC + HTTPS LB, sample proxy |
 | Any proxy task (start here) | [`apigee-proxy-builder`](skills/apigee-proxy-builder/SKILL.md) | 24 policy/flow references (incl. official best-practices and security-architecture checklists), `validate_bundle.py`, `deploy_bundle.sh` |
 | **API** Management (REST) | [`apigee-api-proxy`](skills/apigee-api-proxy/SKILL.md) | `scaffold_api_proxy.py` (API key / OAuth / JWT, OAS validation, quota, cache, CORS, JSON/XML threat protection, backend mTLS), `scaffold_shared_flow.py` |
 | **AI** Gateway (LLM) | [`apigee-ai-gateway`](skills/apigee-ai-gateway/SKILL.md) | `scaffold_ai_gateway.py` (Gemini + Claude, `/auto` routing, Model Armor, token quota, semantic cache) |
@@ -16,6 +17,7 @@ Everything is **stdlib Python 3.9+ / bash**: no repo, framework, `apigeecli` or 
 
 ```mermaid
 flowchart LR
+  Z["No org yet"] --> Y["provision.py apply (Terraform)"] --> A
   A["Requirement"] --> B{"New or existing?"}
   B -- new --> C["scaffold_*.py<br/>(API / AI / MCP / shared flow)"]
   B -- existing --> D["apigee_ctl.py export --env"]
@@ -42,6 +44,11 @@ Or use the scripts directly; every skill folder is self-describing (`SKILL.md` +
 ## Five-minute tour
 
 ```bash
+# 0. No Apigee org yet? Provision one (PAYG, INTERMEDIATE env 'dev', Analytics on, PSC + HTTPS LB)
+python3 skills/apigee-x-provisioning/scripts/provision.py plan  --project my-proj --region us-central1
+python3 skills/apigee-x-provisioning/scripts/provision.py apply --project my-proj --region us-central1 --sample
+source apigee-x-infra/apigee-x.env
+
 export APIGEE_ORG=my-org APIGEE_ENV=dev APIGEE_DEPLOY_SA=apigee-runtime@my-proj.iam.gserviceaccount.com
 S=skills
 
@@ -74,6 +81,7 @@ Example prompts for an agent with these skills installed:
 - "Create an Apigee proxy for https://orders-xyz.a.run.app using ./openapi.yaml, protected by API keys, 100 req/min."
 - "Put an AI gateway in front of Gemini and Claude with per-user token quotas and Model Armor."
 - "Expose our inventory MCP server through Apigee; only the Ops persona may call adjustStock above 100 units."
+- "Provision Apigee X in project my-proj (us-central1) with a PAYG Intermediate environment and Analytics."
 - "Add a spike arrest of 10 per second to the deployed `payments-v1` proxy in test, show me the diff first."
 
 ## Repository layout
@@ -86,6 +94,7 @@ skills/
   apigee-ai-gateway/         scaffold_ai_gateway.py, references/model_routing_playbook.md
   apigee-mcp-gateway/        scaffold_mcp_proxy.py, references/mcp_rest_bridge.md
   apigee-proxy-lifecycle/    apigee_ctl.py, bundle_edit.py, references/update_playbook.md
+  apigee-x-provisioning/     terraform/ (module + mocked-provider tests), scripts/provision.py
 rules/                       apigee_proxy_standards.md, security_and_governance.md (auto-applied to bundle files)
 agents/                      apigee-architect.md, apigee-gateway-tester.md (subagent personas)
 examples/specs/              sample OpenAPI spec
@@ -95,7 +104,7 @@ tests/                       offline test suite + mock Apigee management API
 ## Development
 
 ```bash
-make test       # 24 offline tests: scaffolds, validator bug detection, bundle edits, lifecycle vs mock API, JS converters
+make test       # 28 offline tests (Terraform module tests run when terraform is installed): scaffolds, validator bug detection, bundle edits, lifecycle vs mock API, JS converters
 make examples   # generate + strictly validate one bundle of each kind into ./build
 make lint
 ```
@@ -104,6 +113,7 @@ and add a test for every new scaffold option or validator check. Use `cloud.goog
 not legacy `docs.apigee.com` (Edge).
 
 ## Requirements for live use
+- Provisioning: Terraform >= 1.5, `gcloud auth application-default login`, a billing-linked project (see the provisioning skill)
 - Apigee X / hybrid org, `gcloud` authenticated as a user or SA with `roles/apigee.apiAdminV2` +
   `roles/apigee.environmentAdmin` (and `iam.serviceAccounts.actAs` on the runtime SA)
 - Runtime SA roles as needed: `roles/run.invoker` (Cloud Run targets), `roles/aiplatform.user` (Vertex AI),
