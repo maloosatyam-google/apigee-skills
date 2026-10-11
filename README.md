@@ -31,7 +31,7 @@ flowchart LR
 ## Install
 
 ```bash
-git clone <this-repo> apigee-skills && cd apigee-skills
+git clone git@github.com:maloosatyam-google/apigee-skills.git && cd apigee-skills
 ./install.sh                         # Antigravity / Gemini: global plugin (~/.gemini/config/plugins/apigee-skills)
 ./install.sh --project ~/code/my-api # project-scoped .gemini/{skills,rules,agents}
 ./install.sh --claude ~              # Claude Code user skills (~/.claude/skills)
