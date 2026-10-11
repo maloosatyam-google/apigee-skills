@@ -34,6 +34,9 @@ in minutes, then iterate on it. Pairs with [`apigee-proxy-builder`](../apigee-pr
 | Browser clients? | `--cors` |
 | Cacheable GETs? | `--cache-ttl` |
 | Org-wide policies already in a shared flow? | `--shared-flow NAME` |
+| Sensitive backend needing mTLS / private CA? | `--target-truststore ref://..`, `--target-mtls ref://keystore:alias` |
+| XML or SOAP bodies? | `--xml-threat` (+ SOAPMessageValidation by hand) |
+| Internet-facing? | Cloud Armor / WAAP in front ([security_architecture.md](../apigee-proxy-builder/references/security_architecture.md)) |
 | Org / env / base path / runtime service account? | deploy flags |
 
 ## Quick start
@@ -115,6 +118,7 @@ Policy syntax: [policies_security.md](../apigee-proxy-builder/references/policie
 [load_balancing_and_routing.md](../apigee-proxy-builder/references/load_balancing_and_routing.md).
 Design guidance and the test matrix: [references/api_proxy_patterns.md](references/api_proxy_patterns.md).
 Official best-practice review list: [best_practices_checklist.md](../apigee-proxy-builder/references/best_practices_checklist.md).
+Layered security (Cloud Armor, WAAP, mTLS, data masking): [security_architecture.md](../apigee-proxy-builder/references/security_architecture.md).
 
 ## Troubleshooting
 | Symptom | Likely cause |

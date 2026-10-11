@@ -5,8 +5,8 @@ use cases:
 
 | Use case | Skill | What you get |
 |---|---|---|
-| Any proxy task (start here) | [`apigee-proxy-builder`](skills/apigee-proxy-builder/SKILL.md) | 23 policy/flow references (incl. the official best-practices checklist), `validate_bundle.py`, `deploy_bundle.sh` |
-| **API** Management (REST) | [`apigee-api-proxy`](skills/apigee-api-proxy/SKILL.md) | `scaffold_api_proxy.py` (API key / OAuth / JWT, OAS validation, quota, cache, CORS), `scaffold_shared_flow.py` |
+| Any proxy task (start here) | [`apigee-proxy-builder`](skills/apigee-proxy-builder/SKILL.md) | 24 policy/flow references (incl. official best-practices and security-architecture checklists), `validate_bundle.py`, `deploy_bundle.sh` |
+| **API** Management (REST) | [`apigee-api-proxy`](skills/apigee-api-proxy/SKILL.md) | `scaffold_api_proxy.py` (API key / OAuth / JWT, OAS validation, quota, cache, CORS, JSON/XML threat protection, backend mTLS), `scaffold_shared_flow.py` |
 | **AI** Gateway (LLM) | [`apigee-ai-gateway`](skills/apigee-ai-gateway/SKILL.md) | `scaffold_ai_gateway.py` (Gemini + Claude, `/auto` routing, Model Armor, token quota, semantic cache) |
 | **MCP** Tools Gateway | [`apigee-mcp-gateway`](skills/apigee-mcp-gateway/SKILL.md) | `scaffold_mcp_proxy.py` (per-tool products, argument limits, keyless handshake) |
 | Update existing proxies | [`apigee-proxy-lifecycle`](skills/apigee-proxy-lifecycle/SKILL.md) | `apigee_ctl.py` (export, diff, update, rollback, products, KVM, target servers, flow hooks, trace), `bundle_edit.py` |
@@ -81,7 +81,7 @@ Example prompts for an agent with these skills installed:
 ```text
 plugin.json                  plugin manifest (drop the repo into a plugins/ folder)
 skills/
-  apigee-proxy-builder/      core: SKILL.md, references/ (23 docs), scripts/validate_bundle.py, deploy_bundle.sh
+  apigee-proxy-builder/      core: SKILL.md, references/ (24 docs), scripts/validate_bundle.py, deploy_bundle.sh
   apigee-api-proxy/          scaffold_api_proxy.py, scaffold_shared_flow.py, references/api_proxy_patterns.md
   apigee-ai-gateway/         scaffold_ai_gateway.py, references/model_routing_playbook.md
   apigee-mcp-gateway/        scaffold_mcp_proxy.py, references/mcp_rest_bridge.md
@@ -95,7 +95,7 @@ tests/                       offline test suite + mock Apigee management API
 ## Development
 
 ```bash
-make test       # 21 offline tests: scaffolds, validator bug detection, bundle edits, lifecycle vs mock API, JS converters
+make test       # 24 offline tests: scaffolds, validator bug detection, bundle edits, lifecycle vs mock API, JS converters
 make examples   # generate + strictly validate one bundle of each kind into ./build
 make lint
 ```

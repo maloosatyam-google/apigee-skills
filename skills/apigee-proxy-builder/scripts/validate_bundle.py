@@ -301,6 +301,28 @@ def security_checks(root_dir, kind, policies, attached):
             if ie is not None and len(list(ie)):
                 warn(f"KVM policy '{n}' seeds <InitialEntries> from the bundle - seed KVMs out of band instead")
 
+    # Transport security for TargetEndpoints and ServiceCallouts (backend TLS / mTLS)
+    internal = re.compile(r"^http://(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|[^/]*\.(internal|local|svc|cluster\.local)\b)")
+    for d, _, files in os.walk(root_dir):
+        for f in files:
+            if not f.endswith(".xml") or os.path.basename(d) not in ("targets", "policies"):
+                continue
+            el = parse(os.path.join(d, f))
+            if el is None:
+                continue
+            rel = os.path.relpath(os.path.join(d, f), root_dir)
+            for conn in el.iter("HTTPTargetConnection"):
+                url = text(conn, "URL") or ""
+                if url.startswith("http://") and not internal.match(url):
+                    warn(f"{rel}: backend URL {url} is plaintext HTTP - use HTTPS (and mTLS for sensitive backends)")
+                ssl = conn.find("SSLInfo")
+                if ssl is None:
+                    continue
+                if (text(ssl, "IgnoreValidationErrors") or "").lower() == "true":
+                    warn(f"{rel}: SSLInfo IgnoreValidationErrors=true disables backend certificate validation")
+                if (text(ssl, "ClientAuthEnabled") or "").lower() == "true" and not (text(ssl, "KeyStore") and text(ssl, "KeyAlias")):
+                    err(f"{rel}: SSLInfo ClientAuthEnabled=true (mTLS) needs <KeyStore> and <KeyAlias>")
+
 
 def ai_checks(policies, conditions):
     by_type = {}

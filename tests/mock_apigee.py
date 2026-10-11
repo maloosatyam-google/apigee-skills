@@ -17,6 +17,7 @@ class State:
         self.kvms = {}                                   # (env, map) -> {key: value}
         self.targetservers = {}
         self.flowhooks = {}
+        self.debugmasks = {}
         self.calls = []
 
 
@@ -46,7 +47,7 @@ def make_handler(st):
             if not m:
                 return self._send(404, {"error": {"message": "bad org path"}})
             path = m.group(1)
-            body = self._body() if method in ("POST", "PUT") else b""
+            body = self._body() if method in ("POST", "PUT", "PATCH") else b""
 
             # import bundle
             mm = re.match(r"^/(apis|sharedflows)$", path)
@@ -136,6 +137,11 @@ def make_handler(st):
                 d = json.loads(body)
                 st.targetservers[(env, d["name"])] = d
                 return self._send(200, d)
+            mm = re.match(r"^/environments/([^/]+)/debugmask$", path)
+            if mm:
+                if method == "PATCH":
+                    st.debugmasks[mm.group(1)] = json.loads(body)
+                return self._send(200, st.debugmasks.get(mm.group(1), {}))
             mm = re.match(r"^/environments/([^/]+)/flowhooks/(.+)$", path)
             if mm and method == "PUT":
                 st.flowhooks[mm.groups()] = json.loads(body)
@@ -150,6 +156,9 @@ def make_handler(st):
 
         def do_PUT(self):
             self._route("PUT")
+
+        def do_PATCH(self):
+            self._route("PATCH")
 
         def do_DELETE(self):
             self._route("DELETE")

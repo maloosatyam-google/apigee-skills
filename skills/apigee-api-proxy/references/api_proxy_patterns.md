@@ -49,7 +49,8 @@
 **Per-operation scope check (OAuth)**: in the operation's flow use a second
 `<OAuthV2><Operation>VerifyAccessToken</Operation><Scope>write</Scope></OAuthV2>`.
 
-**IP allowlist**:
+**IP allowlist** (prefer Cloud Armor at the load balancer for IP/geo rules; use AccessControl only where Cloud Armor
+is not possible, e.g. per-proxy allowlists on an internal environment):
 ```xml
 <AccessControl name="AC-AllowCorpNat">
   <IPRules noRuleMatchAction="DENY">

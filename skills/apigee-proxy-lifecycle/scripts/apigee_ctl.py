@@ -29,6 +29,10 @@ Config
   targetserver-apply FILE.json --env ENV create or update a target server
   flowhook-attach HOOK SHAREDFLOW --env ENV
                                          HOOK = PreProxyFlowHook|PostProxyFlowHook|PreTargetFlowHook|PostTargetFlowHook
+  debugmask-get --env ENV                show the environment debug mask (data masking in trace sessions)
+  debugmask-apply FILE.json --env ENV    set masked JSON paths / XPaths / variables, e.g.
+                                         {"requestJSONPaths":["$.password","$.card.number"],
+                                          "responseJSONPaths":["$.ssn"],"variables":["request.header.authorization"]}
 Debug
   debug NAME --env ENV [--rev N] [--seconds 60] [--out DIR]
                                          start a debug (trace) session, wait, download transactions as JSON
@@ -86,7 +90,8 @@ class Api:
     def req(self, method, path, query=None, body=None, raw=None, ctype=None, ok404=False, binary=False):
         data, headers = None, {"Authorization": f"Bearer {self.token}"}
         if body is not None:
-            data, headers["Content-Type"] = json.dumps(body).encode(), "application/json"
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
         elif raw is not None:
             data, headers["Content-Type"] = raw, ctype
         r = urllib.request.Request(self.url(path, query), data=data, method=method, headers=headers)
@@ -377,6 +382,21 @@ def cmd_flowhook_attach(api, o):
     print(f"Attached shared flow '{o.sharedflow_name}' to {o.hook} in {o.env}")
 
 
+def cmd_debugmask_get(api, o):
+    print(json.dumps(api.req("GET", f"/environments/{o.env}/debugmask"), indent=2))
+
+
+def cmd_debugmask_apply(api, o):
+    mask = load_json(o.file)
+    allowed = {"requestXPaths", "responseXPaths", "faultXPaths", "requestJSONPaths", "responseJSONPaths",
+               "faultJSONPaths", "variables", "namespaces"}
+    unknown = set(mask) - allowed
+    if unknown:
+        sys.exit(f"unknown debug mask fields {sorted(unknown)}; allowed: {sorted(allowed)}")
+    api.req("PATCH", f"/environments/{o.env}/debugmask", query={"replaceRepeatedFields": "true"}, body=mask)
+    print(f"Debug mask updated in {o.env}: " + ", ".join(f"{k}={len(v)}" for k, v in mask.items()))
+
+
 def cmd_debug(api, o):
     rev = api.resolve_rev(o.name, o.rev, o.env)
     base = f"/environments/{o.env}/{api.coll}/{o.name}/revisions/{rev}/debugsessions"
@@ -451,6 +471,9 @@ def main():
     p = sp("flowhook-attach", cmd_flowhook_attach)
     p.add_argument("hook", choices=["PreProxyFlowHook", "PostProxyFlowHook", "PreTargetFlowHook", "PostTargetFlowHook"])
     p.add_argument("sharedflow_name"); p.add_argument("--env", default=env_default, required=env_default is None)
+    p = sp("debugmask-get", cmd_debugmask_get); p.add_argument("--env", default=env_default, required=env_default is None)
+    p = sp("debugmask-apply", cmd_debugmask_apply); p.add_argument("file")
+    p.add_argument("--env", default=env_default, required=env_default is None)
     p = sp("debug", cmd_debug); p.add_argument("name")
     p.add_argument("--env", default=env_default, required=env_default is None)
     p.add_argument("--rev"); p.add_argument("--seconds", type=int, default=60); p.add_argument("--out", default="./debug")

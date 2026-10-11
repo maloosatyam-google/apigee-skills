@@ -257,6 +257,38 @@ class ValidatorBestPractices(Base):
         self.assertIn("httpClient", r.stdout)
 
 
+class SecurityHardening(Base):
+    """Checks/options derived from 'Best practices for securing applications and APIs using Apigee'."""
+
+    def test_backend_mtls_and_xml_threat(self):
+        out = self.p("s")
+        py(API, "--out", out, "--name", "s", "--basepath", "/s", "--target", "https://b.example.com",
+           "--xml-threat", "--target-truststore", "ref://backend-ts", "--target-mtls", "ref://client-ks:client")
+        self.validate(out)
+        t = open(os.path.join(out, "apiproxy/targets/default.xml")).read()
+        self.assertIn("<KeyStore>ref://client-ks</KeyStore>", t)
+        self.assertIn("<KeyAlias>client</KeyAlias>", t)
+        self.assertTrue(os.path.isfile(os.path.join(out, "apiproxy/policies/XTP-XMLThreatProtection.xml")))
+
+    def test_plaintext_and_insecure_tls_flagged(self):
+        out = self.p("p")
+        py(API, "--out", out, "--name", "p", "--basepath", "/p", "--target", "http://public.example.com")
+        f = os.path.join(out, "apiproxy/targets/default.xml")
+        txt = open(f).read().replace("</URL>", "</URL>\n    <SSLInfo><Enabled>true</Enabled><ClientAuthEnabled>true</ClientAuthEnabled>"
+                                      "<IgnoreValidationErrors>true</IgnoreValidationErrors></SSLInfo>")
+        with open(f, "w") as fh:
+            fh.write(txt)
+        r = py(VALIDATE, out, ok=False)
+        self.assertIn("plaintext HTTP", r.stdout)
+        self.assertIn("IgnoreValidationErrors", r.stdout)
+        self.assertIn("needs <KeyStore> and <KeyAlias>", r.stdout)
+
+    def test_internal_http_backend_allowed(self):
+        out = self.p("i")
+        py(API, "--out", out, "--name", "i", "--basepath", "/i", "--target", "http://10.0.0.5:8080")
+        self.validate(out)
+
+
 class BundleEdit(Base):
     def test_update_existing_proxy_locally(self):
         out = self.p("orders")
@@ -335,6 +367,14 @@ class Lifecycle(Base):
         self.assertEqual(self.state.products["o-standard"]["environments"], ["dev"])
         self.ctl("kvm-put", "creds", "router-key", "-", "--env", "dev", stdin="s3cr3t\n")
         self.assertEqual(self.state.kvms[("dev", "creds")]["router-key"], "s3cr3t")
+        mask = self.p("mask.json")
+        with open(mask, "w") as fh:
+            json.dump({"requestJSONPaths": ["$.password"], "variables": ["request.header.authorization"]}, fh)
+        self.ctl("debugmask-apply", mask, "--env", "dev")
+        self.assertEqual(self.state.debugmasks["dev"]["requestJSONPaths"], ["$.password"])
+        with open(mask, "w") as fh:
+            json.dump({"bogus": []}, fh)
+        self.ctl("debugmask-apply", mask, "--env", "dev", ok=False)
 
 
 class DeployScript(Base):

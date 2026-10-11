@@ -73,7 +73,7 @@ Edited files are re-indented (comments preserved), so the first diff after a str
 | Read | `list`, `info NAME`, `deployments [--env]`, `export NAME --out DIR [--rev N\|--env E] [--force]`, `diff DIR [NAME] [--rev\|--env]` |
 | Write | `import DIR`, `deploy NAME --rev N --env E [--sa]`, `update DIR --env E [--sa]`, `rollback NAME --env E [--to-rev N]`, `undeploy NAME --env E [--rev N]` |
 | Config | `product-apply FILE.json [--env E]` (create or update, replaces `<ENV>`), `product-get NAME`, `kvm-put MAP KEY VALUE\|- --env E` (encrypted map, `-` reads stdin), `targetserver-apply FILE.json --env E`, `flowhook-attach HOOK SHAREDFLOW --env E` |
-| Debug | `debug NAME --env E [--seconds 60] [--out DIR]`: starts a trace session, you send traffic, it saves every transaction and prints the executed policies per call |
+| Debug | `debug NAME --env E [--seconds 60] [--out DIR]`: starts a trace session, you send traffic, it saves every transaction and prints the executed policies per call; `debugmask-get --env E`, `debugmask-apply mask.json --env E` mask secrets/PII in traces (set this before tracing production) |
 
 ## Choosing what to change
 | Requirement | Change the... | Not the... |

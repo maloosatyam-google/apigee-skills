@@ -26,10 +26,20 @@ description: "Mandatory security and governance rules for Apigee proxies, shared
   traffic (denial-of-wallet); threat protection / OAS body validation for request payloads.
 - AI traffic is screened with Model Armor (`SanitizeUserPrompt` / `SanitizeModelResponse`) rather than regex redaction.
 
-## 4. Error hygiene
+## 4. Layered defence (Architecture Center guidance)
+- Internet-facing APIs sit behind an external Application Load Balancer with **Cloud Armor** (OWASP rules, DDoS,
+  per-IP rate-based ban, IP/geo rules); add reCAPTCHA (WAAP) for web/mobile callers. Prefer Cloud Armor over the
+  AccessControl policy for IP/geo filtering.
+- Backends are private (peering / PSC / Interconnect) or HTTPS with certificate validation; mTLS (keystore +
+  truststore **references**) for sensitive backends; never `IgnoreValidationErrors=true`.
+- API products scope access per client type (path + verb + quota).
+- Configure debug masks in every environment (`apigee_ctl.py debugmask-apply`); least-privilege IAM; keep audit logs.
+- Details: `skills/apigee-proxy-builder/references/security_architecture.md`.
+
+## 5. Error hygiene
 - Never leak backend hostnames, stack traces, project ids or raw backend error bodies (sanitize 5xx).
 - Return one JSON error shape with a request id; use RaiseFault for deliberate refusals.
 
-## 5. Change safety
+## 6. Change safety
 - Do not deploy to production, undeploy, or delete proxies/products/KVM entries without explicit user approval.
 - Always keep a rollback path (`apigee_ctl.py rollback`) and verify after deploying.

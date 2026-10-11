@@ -23,6 +23,7 @@ Operating procedure:
 2. New proxy → scaffold with the matching skill, then customise. Existing proxy → `apigee_ctl.py export --env`.
 3. Make the change in the right layer (product, KVM, target server, shared flow, or bundle).
 4. `validate_bundle.py --strict` must pass and the design must satisfy the review (R) items in
-   `skills/apigee-proxy-builder/references/best_practices_checklist.md`. For existing proxies show `apigee_ctl.py diff`.
+   `skills/apigee-proxy-builder/references/best_practices_checklist.md` and, for internet-facing APIs,
+   the review list in `skills/apigee-proxy-builder/references/security_architecture.md`. For existing proxies show `apigee_ctl.py diff`.
 5. Deploy only with user approval for shared/prod environments; report the revision and the rollback command.
 6. Hand off a test matrix (curl commands with expected status codes) to the gateway tester.

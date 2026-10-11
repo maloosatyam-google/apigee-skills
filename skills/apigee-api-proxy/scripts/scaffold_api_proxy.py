@@ -28,6 +28,10 @@ Options
   --shared-flow NAME                   FlowCallout to an existing shared flow at the start of the PreFlow (repeatable)
   --health                             unauthenticated GET /ping answered by the proxy (no target)
   --cloud-logging                      MessageLogging to Cloud Logging in PostClientFlow (deploy with --sa)
+  --xml-threat                         XMLThreatProtection for XML/SOAP request bodies
+  --target-truststore REF              validate the backend certificate against a truststore reference (ref://...)
+  --target-mtls KEYSTORE_REF:ALIAS     mutual TLS to the backend with a client certificate from a keystore reference
+                                       (combine with --target-truststore). Create keystores/references first.
   --pass-4xx                           (default on) backend 4xx are passed through; 5xx are sanitized
 """
 import argparse
@@ -92,6 +96,9 @@ def main():
     a.add_argument("--health", action="store_true")
     a.add_argument("--cloud-logging", action="store_true")
     a.add_argument("--no-pass-4xx", action="store_true")
+    a.add_argument("--xml-threat", action="store_true")
+    a.add_argument("--target-truststore")
+    a.add_argument("--target-mtls")
     o = a.parse_args()
     if o.auth == "jwt" and not (o.jwks_url and o.issuer):
         a.error("--auth jwt needs --jwks-url and --issuer (and usually --audience)")
@@ -99,6 +106,10 @@ def main():
         a.error("--token-endpoint requires --auth oauth")
     if o.target_server and o.target_auth == "idtoken":
         a.error("--target-auth idtoken needs a fixed --target URL for the audience")
+    if o.target_server and (o.target_mtls or o.target_truststore):
+        a.error("with --target-server, configure TLS/mTLS in the TargetServer's sSLInfo (targetservers/*.json)")
+    if o.target_mtls and ":" not in o.target_mtls.replace("://", ""):
+        a.error("--target-mtls expects KEYSTORE_REF:KEY_ALIAS")
     if not o.basepath.startswith("/"):
         a.error("--basepath must start with /")
 
@@ -222,6 +233,32 @@ def main():
 </JSONThreatProtection>"""
     pre.append(("JTP-JSONThreatProtection",
                 cond(PROT, 'request.header.content-type StartsWith "application/json"')))
+    if o.xml_threat:
+        P["XTP-XMLThreatProtection"] = """<XMLThreatProtection continueOnError="false" enabled="true" name="XTP-XMLThreatProtection">
+  <Source>request</Source>
+  <StructureLimits>
+    <NodeDepth>20</NodeDepth>
+    <AttributeCountPerElement>10</AttributeCountPerElement>
+    <NamespaceCountPerElement>5</NamespaceCountPerElement>
+    <ChildCount includeComment="true" includeElement="true" includeProcessingInstruction="true" includeText="true">200</ChildCount>
+  </StructureLimits>
+  <ValueLimits>
+    <Text>100000</Text>
+    <Attribute>1000</Attribute>
+    <NamespaceURI>256</NamespaceURI>
+    <Comment>1000</Comment>
+    <ProcessingInstructionData>256</ProcessingInstructionData>
+  </ValueLimits>
+  <NameLimits>
+    <Element>100</Element>
+    <Attribute>100</Attribute>
+    <NamespacePrefix>20</NamespacePrefix>
+    <ProcessingInstructionTarget>20</ProcessingInstructionTarget>
+  </NameLimits>
+</XMLThreatProtection>"""
+        pre.append(("XTP-XMLThreatProtection",
+                    cond(PROT, '(request.header.content-type StartsWith "application/xml") or '
+                               '(request.header.content-type StartsWith "text/xml")')))
 
     # --- OpenAPI
     operations = []
@@ -456,6 +493,16 @@ def main():
         </Scopes>
       </GoogleAccessToken>
     </Authentication>"""
+    ssl = ""
+    if o.target_truststore or o.target_mtls:
+        ssl = "\n    <SSLInfo>\n      <Enabled>true</Enabled>"
+        if o.target_mtls:
+            ks, alias = o.target_mtls.rsplit(":", 1)
+            ssl += (f"\n      <ClientAuthEnabled>true</ClientAuthEnabled>\n      <KeyStore>{esc(ks)}</KeyStore>"
+                    f"\n      <KeyAlias>{esc(alias)}</KeyAlias>")
+        if o.target_truststore:
+            ssl += f"\n      <TrustStore>{esc(o.target_truststore)}</TrustStore>"
+        ssl += "\n    </SSLInfo>"
     if o.target:
         conn = f"<URL>{esc(o.target)}</URL>"
     else:
@@ -487,7 +534,7 @@ def main():
       <Property name="connect.timeout.millis">5000</Property>
       <Property name="io.timeout.millis">30000</Property>
     </Properties>
-    {conn}{auth}
+    {conn}{ssl}{auth}
   </HTTPTargetConnection>
 </TargetEndpoint>
 """)

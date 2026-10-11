@@ -34,7 +34,8 @@ All five skills live in this repo and share this skill's validator and reference
 
 **Golden rule for every task:** generate or edit, then `validate_bundle.py`, then (for an existing proxy) `apigee_ctl.py diff`,
 then deploy. Never deploy a bundle that fails validation. Review designs against
-[best_practices_checklist.md](references/best_practices_checklist.md) (Google's official best practices; items marked R are not machine-checkable).
+[best_practices_checklist.md](references/best_practices_checklist.md) (Google's official best practices; items marked R are not machine-checkable) and, for anything internet-facing,
+[security_architecture.md](references/security_architecture.md) (Cloud Armor/WAAP perimeter, mTLS, data masking).
 
 ---
 
@@ -269,6 +270,7 @@ CLIENT RESPONSE SENT
 | [**`javascript_development.md`**](references/javascript_development.md) | JavaScript object model, patterns, best practices |
 | [**`shared_flows.md`**](references/shared_flows.md) | Creating and consuming shared flows, flow hooks |
 | [**`advanced_patterns.md`**](references/advanced_patterns.md) | Proxy chaining, composite APIs, circuit breaker, AI/LLM token policies |
+| [**`security_architecture.md`**](references/security_architecture.md) | **Securing apps and APIs with Apigee** (Architecture Center): security points per actor, policy selection, products as access boundary, Cloud Armor / WAAP / reCAPTCHA / Cloud CDN, private backends, mTLS, data masking, RBAC, audit logs |
 | [**`best_practices_checklist.md`**](references/best_practices_checklist.md) | **Official Apigee proxy design & development best practices** as a review checklist, mapped to validator checks |
 | [**`anti_patterns_and_best_practices.md`**](references/anti_patterns_and_best_practices.md) | Common mistakes, production best practices |
 | [**`debugging_and_performance.md`**](references/debugging_and_performance.md) | Debug sessions, trace methodology, performance optimization |
@@ -312,6 +314,8 @@ What `validate_bundle.py` catches, beyond XML and reference checks:
 - Official best practices: bundle > 15 MB, default RouteRule not last / not unique, unreferenced resources,
   ResponseCache populating non-200/non-GET responses or sharing a CacheResource, `httpClient` in JavaScript,
   PythonScript usage, ServiceCallout URLs whose protocol comes from a variable
+- Transport security: plaintext `http://` backends (except internal addresses), `IgnoreValidationErrors=true`,
+  mTLS (`ClientAuthEnabled`) without a keystore/alias
 
 > [!TIP]
 > If a repository provides its own wrappers or CI checks, run those too for repository conventions; the skill

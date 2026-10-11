@@ -100,5 +100,5 @@ Custom-logic decision guide:
 | AccessEntity: look up apps by UUID rather than name for performance | R |
 | One common MessageLogging format across bundles (shared flow) | S (`scaffold_shared_flow.py --features cloud-logging`), R |
 | Apigee Analytics for non-critical monitoring; Debug (trace) for runtime issues | `apigee_ctl.py debug` |
-| AccessControl IP allowlist on test environments | R ([api_proxy_patterns.md](../../apigee-api-proxy/references/api_proxy_patterns.md)) |
+| IP restriction on test environments (Cloud Armor preferred, AccessControl otherwise) | R ([security_architecture.md](security_architecture.md)) |
 | Content protection (JSON/XML threat protection) on every production proxy; also RegularExpressionProtection, SOAPMessageValidation where relevant | S (JSONThreatProtection), R |
