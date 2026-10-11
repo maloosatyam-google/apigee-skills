@@ -1,0 +1,5 @@
+{
+  "name": "apigee-skills",
+  "description": "Standalone Apigee X skills for building and updating API, AI Gateway (LLM) and MCP Tools Gateway proxies: scaffolds, validator, lifecycle CLI, policy references, rules and agents.",
+  "version": "1.0.0"
+}

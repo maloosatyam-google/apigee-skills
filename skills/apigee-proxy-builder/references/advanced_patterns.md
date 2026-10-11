@@ -1,0 +1,487 @@
+# Advanced Patterns
+
+## Proxy Chaining (LocalTargetConnection)
+
+Call another proxy within the same Apigee environment without network overhead:
+
+```xml
+<TargetEndpoint name="chained-target">
+  <LocalTargetConnection>
+    <APIProxy>user-service-proxy</APIProxy>
+    <ProxyEndpoint>default</ProxyEndpoint>
+  </LocalTargetConnection>
+</TargetEndpoint>
+```
+
+- Benefits: Bypasses load balancers and network stack, lower latency
+- Billing: Each proxy in the chain counts as one API call
+- Data passing: Flow variables are shared across the chain
+- CRITICAL: Avoid calling the SAME proxy (infinite loop). Apigee does not prevent this.
+- Use case: Microservices composition where each proxy handles a domain
+
+## Composite APIs (Service Aggregation)
+
+Pattern: Call multiple backends, aggregate results, return unified response. Uses ServiceCallout policies + JavaScript aggregation.
+
+### Flow Structure
+
+```xml
+<Flow name="composite-user-profile">
+  <Condition>(proxy.pathsuffix MatchesPath "/profile") and (request.verb = "GET")</Condition>
+  <Request>
+    <Step><Name>EV-ExtractUserId</Name></Step>
+    <Step><Name>SC-GetUserDetails</Name></Step>
+    <Step><Name>SC-GetUserOrders</Name></Step>
+    <Step><Name>SC-GetUserPreferences</Name></Step>
+  </Request>
+  <Response>
+    <Step><Name>JS-AggregateProfile</Name></Step>
+  </Response>
+</Flow>
+```
+
+### ServiceCallout Example
+
+```xml
+<ServiceCallout name="SC-GetUserDetails">
+  <Request>
+    <Set>
+      <Verb>GET</Verb>
+      <Path>/users/{extracted.userId}</Path>
+    </Set>
+  </Request>
+  <Response>userResponse</Response>
+  <HTTPTargetConnection>
+    <URL>https://user-service.example.com</URL>
+  </HTTPTargetConnection>
+</ServiceCallout>
+```
+
+### Aggregation JavaScript
+
+```javascript
+var user = JSON.parse(context.getVariable("userResponse.content"));
+var orders = JSON.parse(context.getVariable("ordersResponse.content"));
+var prefs = JSON.parse(context.getVariable("prefsResponse.content"));
+
+var profile = {
+  user: user,
+  recentOrders: orders.items.slice(0, 5),
+  preferences: prefs,
+  generatedAt: new Date().toISOString()
+};
+
+context.setVariable("response.content", JSON.stringify(profile));
+context.setVariable("response.header.Content-Type", "application/json");
+```
+
+### Error Handling in Composite APIs
+
+Set `continueOnError` on non-critical callouts and check response status codes in JavaScript before aggregating:
+
+```javascript
+var userStatus = context.getVariable("userResponse.status.code");
+if (userStatus != 200) {
+  context.setVariable("custom.errorCode", "USER_SERVICE_ERROR");
+  context.setVariable("custom.raiseError", "true");
+}
+```
+
+## Circuit Breaker Pattern
+
+From GoogleCloudPlatform/apigee-samples — uses Quota as a circuit breaker.
+
+### How It Works
+
+1. Quota policy tracks failure count with `continueOnError=true`
+2. When backend fails, increment a failure counter
+3. When counter exceeds threshold (quota exceeded), route to secondary backend
+4. Counter auto-resets after quota interval
+
+### Implementation
+
+```xml
+<!-- Check if circuit is open (quota exceeded = too many failures) -->
+<PreFlow name="PreFlow">
+  <Request>
+    <Step>
+      <Name>Q-CircuitBreaker</Name>
+    </Step>
+  </Request>
+</PreFlow>
+
+<!-- Route based on circuit state -->
+<RouteRule name="primary">
+  <Condition>ratelimit.Q-CircuitBreaker.failed = false</Condition>
+  <TargetEndpoint>primary</TargetEndpoint>
+</RouteRule>
+<RouteRule name="fallback">
+  <TargetEndpoint>secondary</TargetEndpoint>
+</RouteRule>
+```
+
+Quota policy:
+
+```xml
+<Quota name="Q-CircuitBreaker" continueOnError="true">
+  <Allow count="5"/>
+  <Interval>2</Interval>
+  <TimeUnit>minute</TimeUnit>
+  <Distributed>true</Distributed>
+  <Synchronous>true</Synchronous>
+  <EnforceOnly>true</EnforceOnly>
+  <Identifier>circuit-breaker</Identifier>
+</Quota>
+```
+
+- `EnforceOnly`: only check quota, don't count (counting happens separately when backend fails)
+
+`EnforceOnly=true` means the policy checks the quota counter WITHOUT incrementing it (read-only). The actual counter increment happens in the SECOND Quota policy (`Q-CB-Increment`) placed in the TargetEndpoint response flow, which only fires on 5xx responses. This is a two-policy pattern: one to CHECK (read), one to COUNT (write).
+
+### Incrementing on Backend Failure
+
+In TargetEndpoint PostFlow response:
+
+```xml
+<Step>
+  <Condition>response.status.code >= 500</Condition>
+  <Name>Q-CircuitBreaker-Increment</Name>
+</Step>
+```
+
+```xml
+<Quota name="Q-CircuitBreaker-Increment">
+  <Allow count="5"/>
+  <Interval>2</Interval>
+  <TimeUnit>minute</TimeUnit>
+  <Distributed>true</Distributed>
+  <Synchronous>true</Synchronous>
+  <Identifier>circuit-breaker</Identifier>
+</Quota>
+```
+
+## Traffic Mirroring
+
+Pattern: Send a copy of requests to a secondary service without affecting the primary flow. Use PostClientFlow so mirroring happens AFTER the response is sent to the client:
+
+```xml
+<PostClientFlow>
+  <Response>
+    <Step>
+      <Name>FC-TrafficMirror</Name>
+    </Step>
+  </Response>
+</PostClientFlow>
+```
+
+The shared flow for mirroring uses ServiceCallout to the mirror target:
+
+```xml
+<ServiceCallout name="SC-MirrorRequest">
+  <Request>
+    <Copy source="request">
+      <Headers/>
+      <Payload>true</Payload>
+      <Verb>true</Verb>
+      <Path>true</Path>
+    </Copy>
+  </Request>
+  <Response>mirrorResponse</Response>
+  <HTTPTargetConnection>
+    <URL>https://mirror-service.example.com</URL>
+  </HTTPTargetConnection>
+</ServiceCallout>
+```
+
+- Does not affect primary request latency
+- Useful for canary testing, analytics pipelines, or migration validation
+
+## Multi-Endpoint Proxies
+
+A single proxy can have multiple ProxyEndpoints with different base paths:
+
+```
+apiproxy/proxies/
+├── public.xml      (BasePath: /v1/api/public)
+└── admin.xml       (BasePath: /v1/api/admin)
+```
+
+```xml
+<!-- apiproxy/proxies/public.xml -->
+<ProxyEndpoint name="public">
+  <HTTPProxyConnection>
+    <BasePath>/v1/api/public</BasePath>
+  </HTTPProxyConnection>
+  <PreFlow name="PreFlow">
+    <Request>
+      <Step><Name>VA-VerifyApiKey</Name></Step>
+    </Request>
+  </PreFlow>
+  <RouteRule name="default">
+    <TargetEndpoint>default</TargetEndpoint>
+  </RouteRule>
+</ProxyEndpoint>
+```
+
+```xml
+<!-- apiproxy/proxies/admin.xml -->
+<ProxyEndpoint name="admin">
+  <HTTPProxyConnection>
+    <BasePath>/v1/api/admin</BasePath>
+  </HTTPProxyConnection>
+  <PreFlow name="PreFlow">
+    <Request>
+      <Step><Name>OAuth-VerifyToken</Name></Step>
+      <Step><Name>JS-RequireAdminScope</Name></Step>
+    </Request>
+  </PreFlow>
+  <RouteRule name="default">
+    <TargetEndpoint>admin-target</TargetEndpoint>
+  </RouteRule>
+</ProxyEndpoint>
+```
+
+- Each ProxyEndpoint can have its own flows, fault rules, and route rules
+- Use case: Different auth requirements for public vs admin endpoints
+
+## Google Authentication from Proxies
+
+Apigee X can authenticate to Google Cloud services using the `<Authentication>` element. Tokens are generated automatically from the proxy's service account — no manual token management, KVM lookups, or ServiceCallout-based token exchange needed.
+
+### GoogleAccessToken vs GoogleIDToken
+
+| Element | Token Type | Use When | Example Target |
+|---|---|---|---|
+| `<GoogleAccessToken>` | OAuth 2.0 Access Token | Calling Google Cloud APIs | BigQuery, Secret Manager, Cloud Storage, Cloud Logging |
+| `<GoogleIDToken>` | OpenID Connect ID Token | Calling services that verify caller identity | Cloud Run, Cloud Functions, GKE services with IAP |
+
+**Key difference:** Access Token = "I have permission to do X." ID Token = "I am service account X" (proof of identity).
+
+### Where Authentication Can Be Placed
+
+The `<Authentication>` element works in three locations:
+
+**1. TargetEndpoint HTTPTargetConnection** (most common):
+```xml
+<TargetEndpoint name="bigquery-target">
+  <HTTPTargetConnection>
+    <URL>https://bigquery.googleapis.com/bigquery/v2/projects/my-project/queries</URL>
+    <Authentication>
+      <GoogleAccessToken>
+        <Scopes>
+          <Scope>https://www.googleapis.com/auth/bigquery</Scope>
+        </Scopes>
+      </GoogleAccessToken>
+    </Authentication>
+  </HTTPTargetConnection>
+</TargetEndpoint>
+```
+
+**2. ServiceCallout HTTPTargetConnection** (for mid-flow Google API calls):
+```xml
+<ServiceCallout name="SC-CallCloudFunction">
+  <Request variable="functionRequest"/>
+  <Response>functionResponse</Response>
+  <HTTPTargetConnection>
+    <URL>https://my-function-abc.cloudfunctions.net/process</URL>
+    <Authentication>
+      <GoogleIDToken>
+        <Audience>https://my-function-abc.cloudfunctions.net</Audience>
+      </GoogleIDToken>
+    </Authentication>
+  </HTTPTargetConnection>
+</ServiceCallout>
+```
+
+**3. AssignMessage Set > Authentication** (for custom request construction):
+```xml
+<AssignMessage name="AM-AddGoogleAuth">
+  <Set>
+    <Authentication>
+      <GoogleAccessToken>
+        <Scopes>
+          <Scope>https://www.googleapis.com/auth/cloud-platform</Scope>
+        </Scopes>
+      </GoogleAccessToken>
+    </Authentication>
+  </Set>
+</AssignMessage>
+```
+
+### GoogleIDToken with Dynamic Audience
+
+For multi-environment deployments where Cloud Run URLs differ per environment:
+```xml
+<!-- Dynamic audience from flow variable -->
+<GoogleIDToken>
+  <Audience ref="propertyset.env-config.cloud-run-url"/>
+</GoogleIDToken>
+
+<!-- Or auto-use the target URL as audience -->
+<GoogleIDToken>
+  <Audience useTargetUrl="true"/>
+</GoogleIDToken>
+```
+`useTargetUrl="true"` uses the HTTPTargetConnection URL (minus query params) as the audience automatically.
+
+### Multiple Scopes
+```xml
+<GoogleAccessToken>
+  <Scopes>
+    <Scope>https://www.googleapis.com/auth/bigquery</Scope>
+    <Scope>https://www.googleapis.com/auth/cloud-platform</Scope>
+  </Scopes>
+</GoogleAccessToken>
+```
+
+### Service Account Configuration
+
+The proxy must have a service account assigned at deployment time:
+```bash
+# apigeecli
+apigeecli apis deploy -n my-proxy -e prod -s my-sa@my-project.iam.gserviceaccount.com -o my-org -t $TOKEN
+
+# REST API includes serviceAccount in the deployment request body
+```
+
+**Required IAM roles:**
+- The deploying user needs `iam.serviceAccounts.actAs` on the proxy service account
+- The Apigee platform service account needs `iam.serviceAccountTokenCreator` on the proxy service account (to impersonate it)
+- The proxy service account needs permissions for the target service (e.g., `roles/run.invoker` for Cloud Run, `roles/bigquery.dataViewer` for BigQuery)
+
+### Token Caching
+
+Apigee caches generated tokens internally at the message processor level:
+- Tokens are cached for the remainder of their validity period
+- Cache key: service account + scopes/audience + target URL
+- Tokens are automatically refreshed before expiry
+- No manual cache invalidation — relies on token TTL
+- No need to cache tokens in KVM or flow variables
+
+### Common Error Scenarios
+
+| Error | Cause | Fix |
+|---|---|---|
+| 403 on deployment | Missing `iam.serviceAccounts.actAs` on the deploying user | Grant the IAM role to the deploying identity |
+| 403 at runtime | Proxy SA lacks permissions on the target service | Grant appropriate role (e.g., `roles/run.invoker`) |
+| 500 at runtime | Apigee platform SA can't impersonate proxy SA | Grant `iam.serviceAccountTokenCreator` to Apigee SA |
+| Token generation fails | Malformed audience or unresolvable `ref` variable | Check PropertySet/variable values; use debug session |
+
+### Common Scopes Reference
+
+| Google Service | Scope |
+|---|---|
+| Cloud Platform (broad) | `https://www.googleapis.com/auth/cloud-platform` |
+| BigQuery | `https://www.googleapis.com/auth/bigquery` |
+| Cloud Storage | `https://www.googleapis.com/auth/devstorage.read_write` |
+| Cloud Logging | `https://www.googleapis.com/auth/logging.write` |
+| Secret Manager | `https://www.googleapis.com/auth/cloud-platform` |
+| Pub/Sub | `https://www.googleapis.com/auth/pubsub` |
+
+## mTLS Southbound (Backend mTLS)
+
+```xml
+<TargetEndpoint name="mtls-backend">
+  <HTTPTargetConnection>
+    <SSLInfo>
+      <Enabled>true</Enabled>
+      <ClientAuthEnabled>true</ClientAuthEnabled>
+      <KeyStore>ref://my-keystore</KeyStore>
+      <KeyAlias>client-cert</KeyAlias>
+      <TrustStore>ref://my-truststore</TrustStore>
+    </SSLInfo>
+    <URL>https://secure-backend.example.com</URL>
+  </HTTPTargetConnection>
+</TargetEndpoint>
+```
+
+- Always use `ref://` references for keystores/truststores (not direct names) so you can rotate certs without redeploying
+- TLS 1.2+ required (Apigee X does not support TLS 1.0/1.1)
+
+## Dynamic Target Routing
+
+Set the target URL dynamically from JavaScript or AssignMessage.
+
+### JavaScript Approach
+
+```javascript
+var region = context.getVariable("request.header.X-Region");
+var targets = {
+  "us": "https://us-api.example.com",
+  "eu": "https://eu-api.example.com",
+  "ap": "https://ap-api.example.com"
+};
+context.setVariable("target.url", targets[region] || targets["us"]);
+```
+
+### AssignMessage Approach
+
+```xml
+<AssignMessage name="AM-SetTarget">
+  <AssignVariable>
+    <Name>target.url</Name>
+    <Value>https://{custom.targetHost}/api</Value>
+  </AssignVariable>
+</AssignMessage>
+```
+
+- `target.url` can be set in ProxyEndpoint request flows (before RouteRule evaluation)
+- Combine with a null RouteRule so the proxy uses whatever `target.url` is set to:
+
+```xml
+<RouteRule name="dynamic">
+  <!-- No TargetEndpoint — uses target.url variable -->
+</RouteRule>
+```
+
+## AI/LLM Policies
+
+Apigee X has dedicated policies for LLM and agent traffic. The current syntax, placement rules
+and production pitfalls are covered in detail in:
+
+- **[policies_ai_gateway.md](policies_ai_gateway.md)**: `LLMTokenQuota` (enforce/count pair),
+  `PromptTokenLimit`, `SanitizeUserPrompt` / `SanitizeModelResponse` (Model Armor),
+  `SemanticCacheLookup` / `SemanticCachePopulate`, `MonetizationLimitsCheck`, `DataCapture`
+  (monetization scope), `TraceCapture`, `DecodeJWT` for attribution, and the full recommended flow order.
+- **[policies_mcp_tools.md](policies_mcp_tools.md)**: `ParsePayload` (MCP / JSON-RPC 2.0),
+  per-tool API products (`payloadOperationGroup`), and business-limit faults returned as MCP tool errors.
+
+Minimal correct shapes (see the references for the full element lists):
+
+```xml
+<LLMTokenQuota name="LTQ-TokenEnforce" type="rollingwindow">
+  <Allow count="1000" countRef="verifyapikey.VA-VerifyAPIKey.apiproduct.developer.llmQuota.limit"/>
+  <Interval ref="verifyapikey.VA-VerifyAPIKey.apiproduct.developer.llmQuota.interval">1</Interval>
+  <TimeUnit ref="verifyapikey.VA-VerifyAPIKey.apiproduct.developer.llmQuota.timeunit">minute</TimeUnit>
+  <Identifier ref="verifyapikey.VA-VerifyAPIKey.client_id"/>
+  <LLMModelSource>{flow.model}</LLMModelSource>
+  <EnforceOnly>true</EnforceOnly>
+  <SharedName>common-counter</SharedName>
+</LLMTokenQuota>
+<!-- + a CountOnly twin in the response with
+     <LLMTokenUsageSource>{jsonPath('$.usageMetadata.totalTokenCount',response.content,true)}</LLMTokenUsageSource> -->
+
+<SanitizeUserPrompt name="SUP-UserPrompt">
+  <ModelArmor><TemplateName>projects/{PROJECT}/locations/{REGION}/templates/{TEMPLATE}</TemplateName></ModelArmor>
+  <UserPromptSource>{jsonPath('$.contents[-1].parts[-1].text',request.content,true)}</UserPromptSource>
+</SanitizeUserPrompt>
+
+<SemanticCacheLookup name="SCL-Lookup">
+  <UserPromptSource>{flow.userPrompt}</UserPromptSource>
+  <Embeddings><VertexAI><URL>https://{REGION}-aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/{REGION}/publishers/google/models/text-embedding-005:predict</URL></VertexAI></Embeddings>
+  <SimilaritySearch><VertexAI>
+    <URL>https://{PUBLIC_DOMAIN}/v1/projects/{PROJECT}/locations/{REGION}/indexEndpoints/{ENDPOINT_ID}:findNeighbors</URL>
+    <DeployedIndexID>{DEPLOYED_INDEX_ID}</DeployedIndexID>
+    <Threshold>0.95</Threshold>
+  </VertexAI></SimilaritySearch>
+</SemanticCacheLookup>
+```
+
+> [!WARNING]
+> Older snippets that use `<Allow><Tokens count=.../></Allow>`, `<LLMTokenUsageSource ref="response"/>`,
+> `<CacheConfig><CacheResource>` or `<Source>request</Source>` inside the Sanitize policies are **not valid**
+> Apigee X syntax and will fail on import.
+
+---
+
+See also: [Shared Flows](shared_flows.md) | [Endpoints and Routing](endpoints_and_routing.md) | [Policies: Integration](policies_integration.md) | [Policies: Security](policies_security.md) | [AI Gateway Policies](policies_ai_gateway.md)
