@@ -70,7 +70,7 @@ class SkillLayout(unittest.TestCase):
                                 f"{name}/SKILL.md links to missing {link}")
 
     def test_no_demo_coupling(self):
-        bad = ["maloosatyam", "altostrat", "apigee-ai-gateway-demo", "ui/server/"]
+        bad = ["maloosatyam.demo", "altostrat", "apigee-ai-gateway-demo", "ui/server/"]  # repo URL itself is fine
         for d, _, files in os.walk(ROOT):
             if "/.git" in d or "/tests" in d:
                 continue
