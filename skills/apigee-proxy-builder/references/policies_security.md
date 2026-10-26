@@ -349,7 +349,7 @@ Supported algorithm options: `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512
 - Elliptic curve algorithms (`ES*`) use `<PrivateKey>` and `<PublicKey>` similarly.
 - HMAC algorithms (`HS*`) use `<SecretKey>` for both signing and verification.
 
-Additional elements: `<Id>` (JWT ID/jti claim, auto-generates UUID if omitted), `<NotBefore>` (nbf claim, e.g., `<NotBefore>0s</NotBefore>`), `<AdditionalHeaders>` (custom JWT header claims, not payload). Claim `type` attribute supports: `string`, `number`, `boolean`, `map`. Set `array="true"` on `<Claim>` for array values.
+Additional elements: `<Id>` (JWT ID/jti claim, auto-generates UUID if omitted), `<NotBefore>` (nbf claim, e.g., `<NotBefore>0s</NotBefore>`), `<AdditionalHeaders>` (custom JWT header claims, not payload). Claim `type` attribute supports: `string`, `number`, `boolean`, `map`. Set `array="true"` on `<Claim>` for array values. As of `1-18-0-apigee-7` (Oct 2026), `KnownHeaders` and `CriticalHeaders` in JWS/JWT policies accept names separated by whitespace, and setting `b64` via `AdditionalHeaders` is rejected (`steps.jwt.InvalidNameForAdditionalHeader`). For RFC 7797 unencoded payloads, use the `GenerateJWS` policy.
 
 ### VerifyJWT
 

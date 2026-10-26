@@ -213,11 +213,14 @@ def call_vertex_gemini(project: str, location: str, model: str, notes: list, tar
         "Review the following new Apigee X release notes and determine whether any skill reference docs, "
         "SKILL.md files, or validator checks need to be updated.\n"
         "Rules:\n"
-        "1. Only propose edits if a release note introduces or changes an Apigee X policy element, attribute, "
-        "flow variable, fault code, API product behavior, or runtime requirement relevant to the files provided.\n"
-        "2. Keep edits concise and match the exact style of the existing markdown or Python file.\n"
-        "3. Never add org-, project-, or demo-specific values. Use Apigee X terminology only.\n"
-        "4. Each edit must provide an exact `target` substring currently present in `file` and its `replacement`.\n\n"
+        "1. First check whether the release note items are ALREADY documented in the current repository files below. "
+        "If they are already documented (or if none of the release notes require changes to the skills), "
+        "return an empty array `\"edits\": []` and explain in `summary` that no changes were needed.\n"
+        "2. Only propose edits if a release note introduces or changes an Apigee X policy element, attribute, "
+        "flow variable, fault code, API product behavior, or runtime requirement that is NOT yet covered.\n"
+        "3. Keep edits concise and match the exact style of the existing markdown or Python file.\n"
+        "4. Never add org-, project-, or demo-specific values. Use Apigee X terminology only.\n"
+        "5. Each edit's `target` MUST be an exact, verbatim substring copied directly from `file` (1-5 lines).\n\n"
         "### New Release Notes\n"
         + json.dumps(notes, indent=2)
         + "\n\n### Current Repository Files\n"
@@ -275,14 +278,21 @@ def apply_edits_and_verify(edits: list) -> list:
             if not str(full).startswith(str(ROOT.resolve())) or not full.is_file():
                 raise ValueError(f"Target file does not exist: {rel}")
             orig = full.read_text(encoding="utf-8")
-            if edit["target"] not in orig:
-                raise ValueError(f"Target snippet not found in {rel}")
+            target = edit["target"]
+            replacement = edit["replacement"]
+            if target == replacement or replacement in orig:
+                continue
+            if target not in orig:
+                print(f"WARN: skipping edit in {rel} (exact target snippet not found)", file=sys.stderr)
+                continue
             backups.setdefault(full, orig)
-            full.write_text(orig.replace(edit["target"], edit["replacement"], 1), encoding="utf-8")
-            applied.append(rel)
+            full.write_text(orig.replace(target, replacement, 1), encoding="utf-8")
+            if rel not in applied:
+                applied.append(rel)
 
-        subprocess.run([sys.executable, str(ROOT / "tests" / "test_skills.py")], cwd=ROOT, check=True)
-        subprocess.run(["make", "lint"], cwd=ROOT, check=True)
+        if applied:
+            subprocess.run([sys.executable, str(ROOT / "tests" / "test_skills.py")], cwd=ROOT, check=True)
+            subprocess.run(["make", "lint"], cwd=ROOT, check=True)
         return applied
     except Exception:
         for full, orig in backups.items():
