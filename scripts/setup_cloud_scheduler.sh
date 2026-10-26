@@ -112,8 +112,10 @@ fi
 echo "==> 3. Creating or updating Cloud Scheduler job '${JOB_NAME}' (${SCHEDULE} ${TIME_ZONE})..."
 if ! $DRY_RUN && gcloud scheduler jobs describe "$JOB_NAME" --location "$REGION" --project "$PROJECT" >/dev/null 2>&1; then
   ACTION="update"
+  HEADER_FLAG="--update-headers"
 else
   ACTION="create"
+  HEADER_FLAG="--headers"
 fi
 
 run_cmd gcloud scheduler jobs "$ACTION" http "$JOB_NAME" \
@@ -123,7 +125,7 @@ run_cmd gcloud scheduler jobs "$ACTION" http "$JOB_NAME" \
   --time-zone "$TIME_ZONE" \
   --uri "$TARGET_URI" \
   --http-method POST \
-  --headers "Content-Type=application/json" \
+  "$HEADER_FLAG" "Content-Type=application/json" \
   --message-body "$BODY" \
   --oauth-service-account-email "$SA_EMAIL" \
   --oauth-token-scope "https://www.googleapis.com/auth/cloud-platform" \
