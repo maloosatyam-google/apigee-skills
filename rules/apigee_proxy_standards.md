@@ -1,6 +1,12 @@
 ---
 trigger: glob
 globs: "**/apiproxy/**,**/sharedflowbundle/**,**/api_product*.json,**/products/*.json"
+paths:
+  - "**/apiproxy/**"
+  - "**/sharedflowbundle/**"
+  - "**/api_product*.json"
+  - "**/products/*.json"
+applyTo: "**/apiproxy/**,**/sharedflowbundle/**,**/api_product*.json,**/products/*.json"
 description: "Conventions for creating and modifying Apigee X proxy bundles, shared flows and API products (API, AI Gateway, MCP)."
 ---
 

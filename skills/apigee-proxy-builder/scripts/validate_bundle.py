@@ -385,14 +385,26 @@ def ai_checks(policies, conditions):
             if el.find("Source") is not None:
                 err(f"{tag} '{n}' has <Source> - not a valid element (use UserPromptSource / LLMResponseSource)")
 
+    valid_measures = {"DOT_PRODUCT_DISTANCE", "COSINE_DISTANCE", "SQUARED_L2_DISTANCE", "L1_DISTANCE"}
     for n, el in by_type.get("SemanticCacheLookup", []):
         if el.find("./Embeddings/VertexAI/URL") is None or el.find("./SimilaritySearch/VertexAI") is None:
             err(f"SemanticCacheLookup '{n}' needs <Embeddings><VertexAI><URL> and <SimilaritySearch><VertexAI>")
         if el.find("CacheConfig") is not None:
             err(f"SemanticCacheLookup '{n}' uses <CacheConfig> - not valid Apigee X syntax")
+        dm = text(el, "./SimilaritySearch/VertexAI/DistanceMeasureType")
+        if dm and dm not in valid_measures and not dm.startswith("{"):
+            err(f"SemanticCacheLookup '{n}' has invalid <DistanceMeasureType> '{dm}' "
+                f"(must be one of {', '.join(sorted(valid_measures))})")
     for n, el in by_type.get("SemanticCachePopulate", []):
         if el.find("./SimilaritySearch/VertexAI/URL") is None:
             err(f"SemanticCachePopulate '{n}' needs <SimilaritySearch><VertexAI><URL> (…:upsertDatapoints)")
+
+    for tag in ("GenerateJWT", "GenerateJWS"):
+        for n, el in by_type.get(tag, []):
+            for hdr in el.findall("./AdditionalHeaders/Header"):
+                if (hdr.get("name") or "").lower() == "b64":
+                    err(f"{tag} '{n}' sets 'b64' via <AdditionalHeaders> (rejected in Apigee X 1-18-0-apigee-7+; "
+                        f"use <UnencodedPayload> in GenerateJWS)")
 
     for n, el in by_type.get("DataCapture", []):
         for c in el.iter("Collect"):

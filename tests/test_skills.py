@@ -70,6 +70,26 @@ class SkillLayout(unittest.TestCase):
             for link in re.findall(r"\]\(((?:\.\./|references/|scripts/)[^)#\s]+)", txt):
                 self.assertTrue(os.path.exists(os.path.normpath(os.path.join(SK, name, link))),
                                 f"{name}/SKILL.md links to missing {link}")
+        link_re = re.compile(r"\[[^\]]+\]\(([^)#\s]+)(?:#[^)]+)?\)")
+        for dp, _, fns in os.walk(ROOT):
+            if "/.git" in dp or "/.terraform" in dp or "/build" in dp:
+                continue
+            for fn in fns:
+                if not fn.endswith(".md"):
+                    continue
+                p = os.path.join(dp, fn)
+                txt = open(p).read()
+                for target in link_re.findall(txt):
+                    if target.startswith(("http://", "https://", "mailto:", "file://")):
+                        self.assertNotIn("docs.apigee.com", target, f"legacy Edge doc URL in {p}: {target}")
+                        continue
+                    resolved = os.path.normpath(os.path.join(dp, target))
+                    self.assertTrue(os.path.exists(resolved), f"{p} links to missing {target}")
+        for mf in ("plugin.json", ".claude-plugin/plugin.json", "gemini-extension.json"):
+            data = json.load(open(os.path.join(ROOT, mf)))
+            self.assertEqual(data["name"], "apigee-skills")
+            self.assertIn("description", data)
+            self.assertIn("version", data)
 
     def test_no_demo_coupling(self):
         bad = ["maloosatyam.demo", "altostrat", "apigee-ai-gateway-demo", "ui/server/"]  # repo URL itself is fine
@@ -215,6 +235,19 @@ class ValidatorCatchesBugs(Base):
         self._sub(f, "<Remove>", '<Set><Headers><Header name="x-key">AIza' + "A" * 35 + "</Header></Headers></Set><Remove>")
         r = py(VALIDATE, out, ok=False)
         self.assertIn("hardcoded Google API key", r.stdout)
+
+    def test_semantic_cache_distance_measure(self):
+        out = self.p("ai_sc")
+        py(AI, "--out", out, "--project", "p", "--cache-region", "us-central1",
+           "--index-endpoint-host", "idx.vdb.vertexai.goog", "--index-endpoint-id", "1",
+           "--deployed-index-id", "d", "--index-id", "2")
+        f = self._pol(out, "SCL-Semantic-Cache-Lookup")
+        self._sub(f, "<Threshold>0.95</Threshold>",
+                  "<Threshold>0.15</Threshold><DistanceMeasureType>COSINE_DISTANCE</DistanceMeasureType>")
+        self.validate(out)
+        self._sub(f, "COSINE_DISTANCE", "MANHATTAN_DISTANCE")
+        r = py(VALIDATE, out, ok=False)
+        self.assertIn("invalid <DistanceMeasureType>", r.stdout)
 
 
 class ValidatorBestPractices(Base):
@@ -517,6 +550,98 @@ class DeployScript(Base):
         run("bash", DEPLOY, out, "--package-only", "--out", z)
         import zipfile
         self.assertIn("apiproxy/o.xml", zipfile.ZipFile(z).namelist())
+
+
+class InstallScript(Base):
+    def test_install_modes(self):
+        inst = os.path.join(ROOT, "install.sh")
+        home = self.p("home")
+        os.makedirs(home, exist_ok=True)
+        run("bash", inst, env={"HOME": home})
+        self.assertTrue(os.path.islink(os.path.join(home, ".gemini/config/plugins/apigee-skills")))
+        run("bash", inst, ok=False, env={"HOME": home})
+        run("bash", inst, "--copy", "--force", env={"HOME": home})
+        self.assertTrue(os.path.isfile(os.path.join(home, ".gemini/config/plugins/apigee-skills/plugin.json")))
+
+        proj = self.p("proj")
+        run("bash", inst, "--project", proj)
+        self.assertTrue(os.path.isfile(os.path.join(proj, ".agents/skills/apigee-api-proxy/SKILL.md")))
+        self.assertTrue(os.path.isfile(os.path.join(proj, ".agents/rules/apigee_proxy_standards.md")))
+        self.assertTrue(os.path.isfile(os.path.join(proj, ".agents/agents/apigee-architect.md")))
+
+        claude = self.p("claude")
+        run("bash", inst, "--claude", claude)
+        self.assertTrue(os.path.isfile(os.path.join(claude, ".claude/skills/apigee-ai-gateway/SKILL.md")))
+        self.assertTrue(os.path.isfile(os.path.join(claude, ".claude/rules/security_and_governance.md")))
+        ca = open(os.path.join(claude, ".claude/agents/apigee-architect.md")).read()
+        self.assertIn("name: apigee-architect", ca)
+        self.assertNotIn("mainAgent:", ca)
+
+        copilot = self.p("copilot")
+        run("bash", inst, "--copilot", copilot)
+        self.assertTrue(os.path.isfile(os.path.join(copilot, ".github/skills/apigee-mcp-gateway/SKILL.md")))
+        self.assertTrue(os.path.isfile(
+            os.path.join(copilot, ".github/instructions/apigee_proxy_standards.instructions.md")))
+        cpa = open(os.path.join(copilot, ".github/agents/apigee-architect.agent.md")).read()
+        self.assertIn("name: apigee-architect", cpa)
+        self.assertNotIn("tools:", cpa)
+
+        run("bash", inst, "--copilot", home, env={"HOME": home})
+        self.assertTrue(os.path.isfile(os.path.join(home, ".copilot/skills/apigee-proxy-builder/SKILL.md")))
+        self.assertTrue(os.path.isfile(os.path.join(home, ".copilot/agents/apigee-gateway-tester.agent.md")))
+
+        gem = self.p("gemini")
+        run("bash", inst, "--gemini", gem)
+        self.assertTrue(os.path.isfile(os.path.join(gem, ".gemini/skills/apigee-proxy-lifecycle/SKILL.md")))
+
+        codex = self.p("codex")
+        run("bash", inst, "--codex", codex)
+        self.assertTrue(os.path.isfile(os.path.join(codex, ".agents/skills/apigee-x-provisioning/SKILL.md")))
+
+        raw = self.p("raw")
+        run("bash", inst, "--target", raw)
+        self.assertTrue(os.path.isfile(os.path.join(raw, "apigee-api-proxy/SKILL.md")))
+
+
+class ReleaseNotesSync(Base):
+    def test_sync_release_notes_and_scheduler_setup(self):
+        sync = os.path.join(ROOT, "scripts/sync_release_notes.py")
+        sched = os.path.join(ROOT, "scripts/setup_cloud_scheduler.sh")
+        feed = self.p("feed.xml")
+        with open(feed, "w") as f:
+            f.write("""<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>November 01, 2026</title>
+    <id>tag:google.com,2016:apigee-release-notes#November_01_2026</id>
+    <updated>2026-11-01T00:00:00-07:00</updated>
+    <content type="html"><![CDATA[
+      <h2 class="release-note-product-title">Apigee X</h2>
+      <p>Released 1-18-0-apigee-8 with LLMTokenQuota and SemanticCacheLookup enhancements.</p>
+      <h2 class="release-note-product-title">Apigee Edge for Private Cloud</h2>
+      <p>Legacy Edge patch.</p>
+    ]]></content>
+  </entry>
+</feed>""")
+        state_file = self.p("state.json")
+        with open(state_file, "w") as f:
+            json.dump({"last_synced_date": "2026-10-22"}, f)
+        r = py(sync, "--state-file", state_file, "--feed-url", feed, "--json", "--mark-synced")
+        rep = json.loads(r.stdout)
+        self.assertEqual(rep["new_entries_count"], 1)
+        self.assertEqual(rep["relevant_entries_count"], 1)
+        self.assertIn("apigee-ai-gateway", rep["entries"][0]["affected_skills"])
+        self.assertEqual(rep["entries"][0]["versions"], ["1-18-0-apigee-8"])
+        self.assertEqual(json.load(open(state_file))["last_synced_date"], "2026-11-01")
+
+        # Second check after mark-synced sees 0 new entries
+        r2 = py(sync, "--state-file", state_file, "--feed-url", feed, "--json")
+        self.assertEqual(json.loads(r2.stdout)["new_entries_count"], 0)
+
+        # Verify setup_cloud_scheduler.sh --dry-run
+        dr = run("bash", sched, "--project", "my-gcp-project", "--region", "us-central1", "--dry-run")
+        self.assertIn("gcloud scheduler jobs create http apigee-release-notes-sync", dr.stdout)
+        self.assertIn("Asia/Kolkata", dr.stdout)
 
 
 if __name__ == "__main__":

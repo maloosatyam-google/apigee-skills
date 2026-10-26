@@ -230,7 +230,7 @@ Retrieves a value from the cache and assigns it to a flow variable.
 </LookupCache>
 ```
 
-After execution, check `lookupcache.{policy-name}.cachehit` to determine if a value was found. If the lookup misses, the `<AssignTo>` variable is not set.
+After execution, check `lookupcache.{policy-name}.cachehit` to determine if a value was found. If the lookup misses, the `<AssignTo>` variable is not set. (Note: as of `1-18-0-apigee-6`, `lookupcache.{policy-name}.isEncrypted` and `responsecache.{policy-name}.isEncrypted` report the per-entry on-disk encryption state of the L2 cache and evaluate to `false` on L1 cache hits; do not gate security logic on `*.isEncrypted`.)
 
 ### InvalidateCache
 

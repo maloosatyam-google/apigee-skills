@@ -44,7 +44,8 @@ against a production AI Gateway proxy. Every example works as written. Swap the
 </SanitizeUserPrompt>
 ```
 
-- Default `UserPromptSource` (when omitted) is the Gemini shape: `{jsonPath('$.contents[-1].parts[-1].text',request.content,true)}`.
+- Default `UserPromptSource` (when omitted) is the Gemini shape: `{jsonPath('$.contents[-1].parts[-1].text',request.content,true)}`. As of `1-18-0-apigee-7` (Oct 2026), the default source templates in `SanitizeUserPrompt` and `SanitizeModelResponse` resolve properly even when `<Source>` is omitted and `<IgnoreUnresolvedVariables>false</IgnoreUnresolvedVariables>`.
+- `<FunctionResponseSource>` (`1-18-0-apigee-2`+) extracts function/tool response data from user turns as a fallback when `<UserPromptSource>` returns empty on function-calling turns (defaults to Gemini format; use custom JSONPath for OpenAI/Anthropic).
 - For multi-provider gateways, extract the prompt **once** in JavaScript (Gemini `contents[].parts[].text`,
   Anthropic/OpenAI `messages[].content`, flat `prompt`) into `flow.userPrompt`. Reuse that variable
   in SUP, PTL and SCL.
@@ -78,6 +79,8 @@ streaming not supported), for the same reason.
 ```
 
 - Run in the ProxyEndpoint PostFlow Response with `response.status.code = 200`.
+- **SSE streaming (`1-18-0-apigee-7`+, Oct 2026):** `SanitizeModelResponse` supports continuous-scan bidirectional gRPC streaming over Server-Sent Events (`text/event-stream` / `<EventFlow>`), preserving native LLM provider SSE JSON envelopes and event framing.
+- `<FunctionCallSource>` (`1-18-0-apigee-2`+) extracts function-call arguments from model responses as a fallback when `<LLMResponseSource>` returns empty.
 - The default extraction is Gemini-shaped. If a target returns another shape (for example Anthropic
   `content[]`), either normalise the response to Gemini first or skip the step for that provider.
 - Faults: `steps.sanitize.model.response.{FilterMatched|FailedToExtractLLMResponse|ModelArmorAPIFailed|...}`.
@@ -144,10 +147,10 @@ The supported pattern uses **two policies that share a counter**:
 </LLMTokenQuota>
 ```
 
-**How the limit is resolved.** VerifyAPIKey matches the key to an API product that has an
-`llmOperationGroup`. The model string from `LLMModelSource` selects the operationConfig that
-supplies `...developer.llmQuota.limit/interval/timeunit`. The literal `count`/`Interval`/`TimeUnit`
-values are only a fallback.
+**How the limit is resolved.** VerifyAPIKey (or OAuthV2 `VerifyAccessToken`) matches the credential to an API product that has an
+`llmOperationGroup`. As of `1-18-0-apigee-7` (Oct 2026), `VerifyAPIKey` and `VerifyAccessToken` set the `apiproduct.operation.llmTokenQuota.*` flow variables strictly from the LLM operation(s) that matched the request (never from unmatched operations). The model string from `LLMModelSource` selects the operationConfig that
+supplies `...developer.llmQuota.limit/interval/timeunit` (and as of `1-18-0-apigee-3`+, if `<LLMModelSource>` is omitted and the request body has no `model` field, `LLMTokenQuota` resolves the model directly from the matched API Product LLM operation). The literal `count`/`Interval`/`TimeUnit`
+values are only a fallback. When `LLMTokenQuota` and `PromptTokenLimit` execute, Apigee automatically identifies the LLM provider and populates built-in analytics fields (`ai_llm_prompt_token_count`, `ai_llm_response_token_count`, `ai_llm_model_name`, `ai_llm_model_provider`) for Custom Reports and the API hub **AI performance** dashboard.
 
 ```json
 "llmOperationGroup": {
@@ -222,7 +225,8 @@ Variables: `ratelimit.{policy}.used.count`, `.allowed.count`, `.exceed.count`, `
 ```
 
 - Prerequisites: a Vector Search index with **streaming updates**, deployed to a **public**
-  index endpoint (or PSC, using `<PrivateServiceConnect><GrpcEndpoint>`), and the embeddings model.
+  index endpoint (or PSC, using `<PrivateServiceConnect><GrpcEndpoint>` as supported in `1-18-0-apigee-4`+), and the embeddings model.
+- **`<DistanceMeasureType>` (`1-18-0-apigee-4`+, Sept 2026):** Optional child of `<SimilaritySearch><VertexAI>` accepting `DOT_PRODUCT_DISTANCE` (default), `COSINE_DISTANCE`, `SQUARED_L2_DISTANCE`, or `L1_DISTANCE`. The `0`–`1` restriction on `<Threshold>` is removed, and the policy compares `<Threshold>` in the direction implied by the declared measure (re-tune `<Threshold>` in the same edit when changing `<DistanceMeasureType>`).
 - Lookup runs in the ProxyEndpoint PreFlow. **A hit returns the cached response and skips the target and
   the target flows.** Put anything that must run on a miss only (router callouts, quota
   enforcement) in later conditional flows or in the TargetEndpoint.
@@ -379,5 +383,5 @@ PostClientFlow: ML-CloudLogging
 DefaultFaultRule (AlwaysEnforce): DC-FaultAnalytics
 ```
 
-See also: [ai-gateway-policy-manager skill](../../ai-gateway-policy-manager/SKILL.md) |
+See also: [apigee-ai-gateway skill](../../apigee-ai-gateway/SKILL.md) |
 [policies_mcp_tools.md](policies_mcp_tools.md) | [policies_traffic_management.md](policies_traffic_management.md)

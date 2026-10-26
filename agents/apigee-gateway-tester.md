@@ -3,6 +3,8 @@ name: apigee-gateway-tester
 description: "Verifies deployed Apigee API, AI Gateway and MCP proxies end to end: auth, quotas, guardrails, routing, errors and traces."
 tools:
   - read_file
+  - edit_file
+  - write_file
   - write_to_file
   - grep_search
   - find_by_name

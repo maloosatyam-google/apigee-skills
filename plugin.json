@@ -1,5 +1,12 @@
 {
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "apigee-skills",
-  "description": "Standalone Apigee X skills for building and updating API, AI Gateway (LLM) and MCP Tools Gateway proxies: scaffolds, validator, lifecycle CLI, policy references, rules and agents.",
-  "version": "1.0.0"
+  "displayName": "Apigee X Skills",
+  "description": "Standalone Apigee X skills for building, validating, deploying, and operating REST API proxies, AI Gateways (LLM), MCP Tools Gateways, and Apigee X org provisioning.",
+  "version": "1.0.0",
+  "suggestedPrompts": [
+    "Scaffold a production Apigee X REST API proxy from an OpenAPI spec with API key auth and quota",
+    "Build an Apigee X AI Gateway for Vertex AI Gemini with semantic caching, token limits, and Model Armor",
+    "Provision an Apigee X organization with Terraform or audit an existing proxy bundle"
+  ]
 }

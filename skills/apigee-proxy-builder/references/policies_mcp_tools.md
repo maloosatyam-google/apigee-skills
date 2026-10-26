@@ -66,6 +66,9 @@ products (support, operations, admin, insights) are therefore just different lis
 </Quota>
 ```
 
+- **Combining MCP with REST / LLM on one API Product (`1-18-0-apigee-4`+, Aug 2026):** A single API Product can combine `payloadOperationGroup` (MCP JSON-RPC operations) with a REST `operationGroup` or `llmOperationGroup` without rejecting REST/LLM traffic with `401`.
+- **API hub MCP observability & governance (`2026`):** API hub's **Tool performance** dashboard reports MCP tool traffic, throughput, payload sizes, and latency by MCP server, deployment, and tool name; register MCP proxies in API hub with the `service_type` system attribute (`Code`, `Model`, `Agent`, or `Skill`).
+
 ## 3. Reference ProxyEndpoint
 
 ```xml
@@ -206,4 +209,4 @@ The app XML is available in `AccessEntity.AE-CallerKey`. Inspect only the `<Cred
 - [ ] Strip `Authorization`, `x-apikey`, `X-Serverless-Authorization`, IAP headers before the target
 - [ ] `GoogleIDToken` auth to Cloud Run. MessageLogging in PostClientFlow
 
-See also: [tools-gateway-manager skill](../../tools-gateway-manager/SKILL.md) | [policies_ai_gateway.md](policies_ai_gateway.md)
+See also: [apigee-mcp-gateway skill](../../apigee-mcp-gateway/SKILL.md) | [policies_ai_gateway.md](policies_ai_gateway.md)

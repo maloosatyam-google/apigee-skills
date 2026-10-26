@@ -1,0 +1,6 @@
+{
+  "name": "apigee-skills",
+  "description": "Standalone Apigee X skills for building, validating, deploying, and operating REST API proxies, AI Gateways (LLM), MCP Tools Gateways, and Apigee X org provisioning.",
+  "version": "1.0.0"
+}
+

@@ -1,0 +1,53 @@
+# Cloud Build pipeline invoked weekly by Google Cloud Scheduler to check
+# https://docs.cloud.google.com/apigee/docs/release-notes and update apigee-skills.
+#
+# Manual test run:
+#   gcloud builds submit --config=cloudbuild.release-notes.yaml --substitutions=_PUSH_CHANGES=false .
+
+substitutions:
+  _LOCATION: us-central1
+  _MODEL: gemini-2.5-pro
+  _PUSH_CHANGES: "false"
+  _TARGET_BRANCH: main
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - name: python:3.11-slim
+    id: sync-release-notes
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        python3 scripts/sync_release_notes.py \
+          --apply \
+          --project "$PROJECT_ID" \
+          --location "${_LOCATION}" \
+          --model "${_MODEL}"
+        python3 tests/test_skills.py
+        bash -n skills/apigee-proxy-builder/scripts/deploy_bundle.sh install.sh scripts/setup_cloud_scheduler.sh
+
+  - name: gcr.io/cloud-builders/git
+    id: commit-updates
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        if [[ -z "$$(git status --porcelain)" ]]; then
+          echo "No new Apigee release note updates required."
+          exit 0
+        fi
+        git status -s
+        git diff --stat
+        if [[ "${_PUSH_CHANGES}" != "true" ]]; then
+          echo "_PUSH_CHANGES is ${_PUSH_CHANGES}; skipping git push."
+          exit 0
+        fi
+        git config user.name "apigee-skills-release-sync[bot]"
+        git config user.email "apigee-skills-release-sync@${PROJECT_ID}.iam.gserviceaccount.com"
+        BRANCH="chore/release-notes-sync-$$(date -u +%Y%m%d)"
+        git checkout -B "$$BRANCH"
+        git add skills/ rules/ scripts/release_notes_state.json
+        git commit -m "chore(skills): sync Apigee X release notes ($$(date -u +%Y-%m-%d))"
+        git push -u origin "$$BRANCH"

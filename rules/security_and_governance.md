@@ -1,6 +1,13 @@
 ---
 trigger: glob
 globs: "**/apiproxy/**,**/sharedflowbundle/**,**/*.sh,**/products/*.json,**/api_product*.json"
+paths:
+  - "**/apiproxy/**"
+  - "**/sharedflowbundle/**"
+  - "**/*.sh"
+  - "**/products/*.json"
+  - "**/api_product*.json"
+applyTo: "**/apiproxy/**,**/sharedflowbundle/**,**/*.sh,**/products/*.json,**/api_product*.json"
 description: "Mandatory security and governance rules for Apigee proxies, shared flows, products and deployment scripts."
 ---
 

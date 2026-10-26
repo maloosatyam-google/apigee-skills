@@ -3,6 +3,8 @@ name: apigee-architect
 description: "Apigee X proxy architect: designs, builds and updates API, AI Gateway and MCP proxies using the apigee-* skills."
 tools:
   - read_file
+  - edit_file
+  - write_file
   - replace_file_content
   - write_to_file
   - grep_search

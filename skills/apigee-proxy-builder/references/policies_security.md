@@ -370,7 +370,7 @@ Additional elements: `<Id>` (JWT ID/jti claim, auto-generates UUID if omitted), 
 
 Auto-populated variables after verification: `jwt.{policy-name}.decoded.claim.{name}`, `jwt.{policy-name}.decoded.header.{name}`, `jwt.{policy-name}.valid`, `jwt.{policy-name}.expiry`.
 
-`<TimeAllowance>` adds a grace period (in seconds) for exp/nbf validation (e.g., `<TimeAllowance>60s</TimeAllowance>` allows 60s clock skew). When using `<JWKS uri="..."/>`, Apigee caches the JWKS for 300 seconds — key rotation takes up to 5 minutes to take effect.
+`<TimeAllowance>` adds a grace period (in seconds) for exp/nbf validation (e.g., `<TimeAllowance>60s</TimeAllowance>` allows 60s clock skew). When using `<JWKS uri="..."/>`, Apigee caches the JWKS for 300 seconds and, as of `1-18-0-apigee-6` (Oct 2026), refreshes the JWKS synchronously upon cache TTL expiration so IdP key rotation does not cause a transient `steps.jwt.NoMatchingPublicKey` fault. `VerifyJWT` also strictly rejects JWT headers containing `"b64": false` (`steps.jwt.InvalidToken` per RFC 7797 §7; for RFC 7797 unencoded payloads use `GenerateJWS`/`VerifyJWS` with `<UnencodedPayload>`).
 
 ### DecodeJWT
 
@@ -491,11 +491,13 @@ Validates JSON payloads against structural constraints to prevent attacks using 
   <ObjectEntryCount>15</ObjectEntryCount>
   <ObjectEntryNameLength>50</ObjectEntryNameLength>
   <StringValueLength>500</StringValueLength>
+  <!-- Optional (1-18-0-apigee-4+): reject duplicate keys within the same JSON object -->
+  <!-- <RejectDuplicateKeys>true</RejectDuplicateKeys> -->
   <Source>request</Source>
 </JSONThreatProtection>
 ```
 
-Each element acts as a threshold. If any limit is exceeded, the policy raises a fault. Omitting an element means no limit is enforced for that dimension.
+Each element acts as a threshold. If any limit is exceeded, the policy raises a fault. Omitting an element means no limit is enforced for that dimension. `<RejectDuplicateKeys>true</RejectDuplicateKeys>` (available in `1-18-0-apigee-4`+, defaults to `false`) rejects JSON objects containing duplicate keys within the same object to prevent JSON key-smuggling / parser-differential attacks.
 
 **Important:** This policy only executes when the request `Content-Type` is `application/json`. Requests with other content types (or no content type) bypass threat protection entirely.
 
