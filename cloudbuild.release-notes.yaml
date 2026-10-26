@@ -51,3 +51,4 @@ steps:
         git add skills/ rules/ scripts/release_notes_state.json
         git commit -m "chore(skills): sync Apigee X release notes ($$(date -u +%Y-%m-%d))"
         git push -u origin "$$BRANCH"
+

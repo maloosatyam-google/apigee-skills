@@ -190,10 +190,15 @@ def get_gcp_token() -> str:
             return json.loads(resp.read().decode("utf-8"))["access_token"]
     except Exception:
         pass
-    out = subprocess.check_output(["gcloud", "auth", "print-access-token"], text=True).strip()
-    if not out:
-        raise RuntimeError("Failed to obtain GCP access token from APIGEE_TOKEN, metadata server, or gcloud.")
-    return out
+    for cmd in (["gcloud", "auth", "application-default", "print-access-token"],
+                ["gcloud", "auth", "print-access-token"]):
+        try:
+            out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL).strip()
+            if out:
+                return out
+        except Exception:
+            pass
+    raise RuntimeError("Failed to obtain GCP access token from APIGEE_TOKEN, metadata server, or gcloud.")
 
 
 def call_vertex_gemini(project: str, location: str, model: str, notes: list, target_files: dict) -> dict:
@@ -365,3 +370,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

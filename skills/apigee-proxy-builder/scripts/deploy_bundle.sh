@@ -45,7 +45,23 @@ $VALIDATE && python3 "$SCRIPT_DIR/validate_bundle.py" "$DIR"
 
 ZIP="${OUT:-$(mktemp -d)/${NAME}.zip}"
 rm -f "$ZIP"
-(cd "$DIR" && zip -qr "$ZIP" "$KIND" -x "*.DS_Store*" -x "*/node_modules/*" -x "*.swp")
+if command -v zip >/dev/null 2>&1; then
+  (cd "$DIR" && zip -qr "$ZIP" "$KIND" -x "*.DS_Store*" -x "*/node_modules/*" -x "*.swp")
+else
+  python3 - "$DIR" "$KIND" "$ZIP" <<'PY'
+import os, sys, zipfile
+base, kind, out = sys.argv[1:4]
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+    for dp, _, fns in os.walk(os.path.join(base, kind)):
+        if "node_modules" in dp:
+            continue
+        for fn in sorted(fns):
+            if fn.startswith(".DS_Store") or fn.endswith(".swp"):
+                continue
+            full = os.path.join(dp, fn)
+            zf.write(full, os.path.relpath(full, base))
+PY
+fi
 echo "Packaged $ZIP"
 $PACKAGE_ONLY && exit 0
 

@@ -99,7 +99,7 @@ else
       "entrypoint": "bash",
       "args": [
         "-ceu",
-        "apt-get update && apt-get install -y --no-install-recommends git make && git clone --depth=1 -b ${BRANCH} ${REPO_URI} /workspace/apigee-skills && cd /workspace/apigee-skills && python3 scripts/sync_release_notes.py --apply --project ${PROJECT} --location ${REGION} && python3 tests/test_skills.py && make lint"
+        "apt-get update && apt-get install -y --no-install-recommends git make zip && git clone --depth=1 -b ${BRANCH} ${REPO_URI} /workspace/apigee-skills && cd /workspace/apigee-skills && python3 scripts/sync_release_notes.py --apply --project ${PROJECT} --location ${REGION} && python3 tests/test_skills.py && make lint"
       ]
     }
   ],
@@ -131,3 +131,4 @@ run_cmd gcloud scheduler jobs "$ACTION" http "$JOB_NAME" \
 
 echo "Done. Trigger an immediate test run anytime with:"
 echo "  gcloud scheduler jobs run ${JOB_NAME} --location ${REGION} --project ${PROJECT}"
+
