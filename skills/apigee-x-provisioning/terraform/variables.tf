@@ -73,14 +73,20 @@ variable "envgroup_hostnames" {
 }
 
 # ---------------------------------------------------------------- encryption keys
+variable "use_cmek" {
+  description = "Create and use Customer-Managed Encryption Keys (Cloud KMS) instead of Google-managed encryption keys (GMEK)."
+  type        = bool
+  default     = false
+}
+
 variable "key_ring_prefix" {
-  description = "Prefix for the Cloud KMS key rings created for Apigee."
+  description = "Prefix for the Cloud KMS key rings created for Apigee (when use_cmek = true or data residency is enabled)."
   type        = string
   default     = "apigee"
 }
 
 variable "runtime_db_key_location" {
-  description = "Location of the runtime database key (region or multi-region like us). Defaults to region."
+  description = "Location of the runtime database CMEK key (region or multi-region like us) when use_cmek = true. Defaults to region."
   type        = string
   default     = null
 }
@@ -116,15 +122,21 @@ variable "routing" {
 }
 
 variable "network" {
-  description = "VPC network for the PSC NEG (external) or PSC endpoint (internal). null = project default network (external only)."
+  description = "Existing VPC network for the PSC NEG (external) or PSC endpoint (internal). null = create a dedicated PSC consumer network."
   type        = string
   default     = null
 }
 
 variable "subnetwork" {
-  description = "Subnetwork in region for the PSC NEG / endpoint. Required for internal routing."
+  description = "Existing subnetwork in region for the PSC NEG / endpoint. null = create a dedicated PSC consumer subnetwork."
   type        = string
   default     = null
+}
+
+variable "psc_subnet_cidr" {
+  description = "CIDR range for the PSC consumer subnetwork created when network is null (PSC NEG only uses 1 IP from this subnet)."
+  type        = string
+  default     = "10.0.0.0/28"
 }
 
 variable "lb_name_prefix" {

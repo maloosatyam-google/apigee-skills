@@ -3,10 +3,13 @@
 #   internal: PSC endpoint (internal IP in your VPC); map the envgroup hostname to it in private DNS
 
 locals {
-  external = var.routing == "external"
-  internal = var.routing == "internal"
-  lb_ip    = local.external ? google_compute_global_address.lb[0].address : (local.internal ? google_compute_address.psc[0].address : null)
-  ip_dash  = local.lb_ip == null ? "" : replace(local.lb_ip, ".", "-")
+  external           = var.routing == "external"
+  internal           = var.routing == "internal"
+  create_psc_network = (local.external || local.internal) && var.network == null
+  psc_network        = local.create_psc_network ? google_compute_network.psc[0].id : var.network
+  psc_subnetwork     = local.create_psc_network ? google_compute_subnetwork.psc[0].id : var.subnetwork
+  lb_ip              = local.external ? google_compute_global_address.lb[0].address : (local.internal ? google_compute_address.psc[0].address : null)
+  ip_dash            = local.lb_ip == null ? "" : replace(local.lb_ip, ".", "-")
 
   # Hostnames per envgroup: explicit, else <group>.<ip>.nip.io (external) or <group>.<project>.internal.
   hostnames = {
@@ -15,6 +18,25 @@ locals {
   }
   all_hostnames = distinct(flatten(values(local.hostnames)))
   psc_target    = google_apigee_instance.instance.service_attachment
+}
+
+# ---------------------------------------------------------------- PSC consumer network & subnet (when var.network is null)
+# Apigee X is provisioned WITHOUT VPC peering (disable_vpc_peering = true).
+# Compute Engine requires a consumer network + regional subnetwork to attach the
+# Private Service Connect (PSC) NEG or internal PSC endpoint to Apigee's service_attachment.
+resource "google_compute_network" "psc" {
+  count                   = local.create_psc_network ? 1 : 0
+  name                    = "${var.lb_name_prefix}-psc-network"
+  auto_create_subnetworks = false
+  depends_on              = [google_project_service.apis]
+}
+
+resource "google_compute_subnetwork" "psc" {
+  count         = local.create_psc_network ? 1 : 0
+  name          = "${var.lb_name_prefix}-psc-subnet"
+  region        = var.region
+  network       = google_compute_network.psc[0].id
+  ip_cidr_range = var.psc_subnet_cidr
 }
 
 # ---------------------------------------------------------------- external
@@ -31,8 +53,8 @@ resource "google_compute_region_network_endpoint_group" "psc" {
   region                = var.region
   network_endpoint_type = "PRIVATE_SERVICE_CONNECT"
   psc_target_service    = local.psc_target
-  network               = var.network
-  subnetwork            = var.subnetwork
+  network               = local.psc_network
+  subnetwork            = local.psc_subnetwork
 }
 
 resource "google_compute_backend_service" "apigee" {
@@ -86,21 +108,15 @@ resource "google_compute_address" "psc" {
   name         = "${var.lb_name_prefix}-psc-ip"
   region       = var.region
   address_type = "INTERNAL"
-  subnetwork   = var.subnetwork
+  subnetwork   = local.psc_subnetwork
   depends_on   = [google_project_service.apis]
-  lifecycle {
-    precondition {
-      condition     = var.network != null && var.subnetwork != null
-      error_message = "routing = \"internal\" requires network and subnetwork."
-    }
-  }
 }
 
 resource "google_compute_forwarding_rule" "psc" {
   count                 = local.internal ? 1 : 0
   name                  = "${var.lb_name_prefix}-psc-endpoint"
   region                = var.region
-  network               = var.network
+  network               = local.psc_network
   ip_address            = google_compute_address.psc[0].id
   target                = local.psc_target
   load_balancing_scheme = "" # required for PSC endpoints to published services

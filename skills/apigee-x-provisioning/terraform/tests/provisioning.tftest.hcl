@@ -38,6 +38,10 @@ run "defaults_payg_intermediate_with_analytics" {
     error_message = "org must be created without VPC peering"
   }
   assert {
+    condition     = google_apigee_organization.org.runtime_database_encryption_key_name == null && google_apigee_instance.instance.disk_encryption_key_name == null && length(google_kms_crypto_key.runtime_db) == 0 && length(google_kms_crypto_key.disk) == 0
+    error_message = "Google-managed encryption keys (GMEK) must be used by default"
+  }
+  assert {
     condition     = google_apigee_organization.org.analytics_region == "us-central1"
     error_message = "analytics region defaults to region"
   }
@@ -152,4 +156,47 @@ run "rejects_zone_as_region" {
     region = "us-central1-a"
   }
   expect_failures = [var.region]
+}
+
+run "payg_asia_south1_prod_intermediate_analytics" {
+  command = plan
+  variables {
+    project_id   = "my-asia-south1-project"
+    region       = "asia-south1"
+    billing_type = "PAYG"
+    environments = {
+      prod = {
+        type      = "INTERMEDIATE"
+        analytics = true
+        envgroup  = "prod-group"
+      }
+    }
+  }
+  assert {
+    condition     = google_apigee_organization.org.billing_type == "PAYG" && google_apigee_organization.org.analytics_region == "asia-south1" && google_apigee_organization.org.disable_vpc_peering == true
+    error_message = "PAYG org in asia-south1 (PSC / no VPC peering)"
+  }
+  assert {
+    condition     = google_apigee_organization.org.runtime_database_encryption_key_name == null && google_apigee_instance.instance.disk_encryption_key_name == null
+    error_message = "Google-managed encryption keys used by default"
+  }
+  assert {
+    condition     = google_apigee_environment.env["prod"].type == "INTERMEDIATE" && google_apigee_environment_addons_config.analytics["prod"].analytics_enabled == true
+    error_message = "prod environment is INTERMEDIATE with Analytics enabled"
+  }
+  assert {
+    condition     = google_apigee_envgroup.group["prod-group"].hostnames == tolist(["prod-group.34-1-2-3.nip.io"])
+    error_message = "prod-group nip.io hostname configured"
+  }
+}
+
+run "optional_cmek_enabled" {
+  command = plan
+  variables {
+    use_cmek = true
+  }
+  assert {
+    condition     = length(google_kms_crypto_key.runtime_db) == 1 && length(google_kms_crypto_key.disk) == 1
+    error_message = "CMEK keys created when use_cmek = true"
+  }
 }

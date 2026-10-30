@@ -23,6 +23,7 @@ Options
   --routing external|internal|none            default external
   --network NET --subnet SUBNET               PSC NEG / endpoint network (internal routing requires both)
   --ssl-certificate SELF_LINK                 use an existing certificate instead of a Google-managed one
+  --cmek                                      use Cloud KMS CMEK instead of Google-managed encryption keys (default GMEK)
   --control-plane-location LOC --consumer-data-region R   data residency
   --state-bucket BUCKET [--state-prefix P]    GCS backend for shared state (recommended for teams/CI)
   --auto-approve                              apply without the confirmation prompt
@@ -73,6 +74,8 @@ def tfvars(o):
                     ("consumer_data_region", "consumer_data_region")):
         if getattr(o, attr):
             v[k] = getattr(o, attr)
+    if o.cmek:
+        v["use_cmek"] = True
     if o.hostname:
         v["envgroup_hostnames"] = {}
         for h in o.hostname:
@@ -163,6 +166,7 @@ def main():
     a.add_argument("--network")
     a.add_argument("--subnet")
     a.add_argument("--ssl-certificate")
+    a.add_argument("--cmek", action="store_true")
     a.add_argument("--control-plane-location")
     a.add_argument("--consumer-data-region")
     a.add_argument("--state-bucket")

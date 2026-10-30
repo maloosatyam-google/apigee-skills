@@ -1,0 +1,29 @@
+# Copy to terraform.tfvars and set project_id (or pass -var="project_id=YOUR_PROJECT_ID").
+project_id   = "replace-with-your-gcp-project-id"
+region       = "asia-south1"
+billing_type = "PAYG"
+
+environments = {
+  prod = {
+    type      = "INTERMEDIATE"
+    analytics = true
+    envgroup  = "prod-group"
+  }
+}
+
+# Encryption: uses Google-managed encryption keys (GMEK) by default.
+# Set use_cmek = true to provision Cloud KMS Customer-Managed Encryption Keys (CMEK).
+use_cmek = false
+
+# Northbound routing (PSC-based, no VPC peering):
+#   "external" = PSC NEG + Global External Managed HTTPS Load Balancer
+#   "internal" = Internal PSC endpoint
+#   "none"     = Skip routing resources
+routing = "external"
+
+# Optional: custom hostnames per environment group (if omitted, defaults to <group>.<lb-ip>.nip.io)
+# envgroup_hostnames = {
+#   "prod-group" = ["api.example.com"]
+# }
+
+

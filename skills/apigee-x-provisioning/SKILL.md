@@ -29,7 +29,7 @@ and [`apigee-mcp-gateway`](../apigee-mcp-gateway/SKILL.md) to build proxies.
 | Environment group | `<env>-group` | `@GROUP` in `--env` |
 | Hostname | `<group>.<lb-ip-with-dashes>.nip.io` (resolves automatically, good for demos) | `--hostname GROUP=api.example.com` |
 | Networking | No VPC peering; northbound through **PSC + global external managed HTTPS LB** with a Google-managed certificate | `--routing internal\|none`, `--network/--subnet`, `--ssl-certificate` |
-| Encryption | CMEK keys (runtime DB, disk; plus control plane / consumer data with data residency), `prevent_destroy` | `key_ring_prefix`, `runtime_db_key_location` in tfvars |
+| Encryption | **Google-managed encryption keys (GMEK)** by default (plus control plane / consumer data CMEK with data residency) | `--cmek` / `use_cmek = true` in tfvars for Cloud KMS CMEK |
 | Instance | name = region | `--instance` |
 | State | local in `./apigee-x-infra` | `--state-bucket BUCKET` (GCS backend) |
 
@@ -68,10 +68,10 @@ module also works with plain Terraform: `cd skills/apigee-x-provisioning/terrafo
 
 | Guide step | Terraform resources |
 |---|---|
-| 2 Enable APIs | `google_project_service` for apigee, apihub, compute, cloudkms |
-| 3 Service identity | `google_project_service_identity` (google-beta) for apigee.googleapis.com |
-| 4 Organization | KMS key ring + key `runtime-db` (+ `control-plane`, `consumer-data` for data residency), IAM for the Apigee service agent, `google_apigee_organization` (`disable_vpc_peering = true`, `billing_type`) |
-| 5 Runtime instance | KMS key `disk` in the region, `google_apigee_instance` (consumer accept list, 90 min create timeout) |
+| 2 Enable APIs | `google_project_service` for apigee, apihub, compute (+ cloudkms when `use_cmek = true` or data residency) |
+| 3 Service identity | `google_project_service_identity` (google-beta) for apigee.googleapis.com (when CMEK is used) |
+| 4 Organization | `google_apigee_organization` (`disable_vpc_peering = true`, `billing_type`, Google-managed key by default; optional KMS `runtime-db` key when `use_cmek = true`) |
+| 5 Runtime instance | `google_apigee_instance` (consumer accept list, 90 min create timeout, Google-managed disk key by default; optional KMS `disk` key when `use_cmek = true`) |
 | 6 Environments | `google_apigee_environment` (`type` for PAYG), `google_apigee_environment_addons_config` (`analytics_enabled`), `google_apigee_instance_attachment`, `google_apigee_envgroup`, `google_apigee_envgroup_attachment` |
 | 7 Routing (external) | global address, PSC `google_compute_region_network_endpoint_group` → instance `service_attachment`, `EXTERNAL_MANAGED` backend service, URL map, managed certificate, target HTTPS proxy, forwarding rule :443 |
 | 7 Routing (internal) | internal `google_compute_address` + PSC endpoint `google_compute_forwarding_rule` (`load_balancing_scheme = ""`) |

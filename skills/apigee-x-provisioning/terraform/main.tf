@@ -1,6 +1,6 @@
 # Apigee X paid organization WITHOUT VPC peering (Subscription or Pay-as-you-go), following
 # https://docs.cloud.google.com/apigee/docs/api-platform/get-started/install-cli-non-peered
-# Steps 2-6: APIs, service identity, CMEK keys, organization, instance, environments, envgroups, attachments.
+# Uses Google-managed encryption keys (GMEK) by default; set use_cmek = true for Cloud KMS CMEK.
 
 locals {
   is_payg         = var.billing_type == "PAYG"
@@ -10,44 +10,51 @@ locals {
   envgroups       = toset([for name, e in var.environments : coalesce(e.envgroup, "${name}-group")])
   env_group_of    = { for name, e in var.environments : name => coalesce(e.envgroup, "${name}-group") }
   analytics_envs  = { for name, e in var.environments : name => e if local.is_payg && e.analytics }
+  use_cmek        = var.use_cmek
   cp_keys         = local.data_residency && var.create_control_plane_keys
+  needs_kms       = local.use_cmek || local.cp_keys
+  required_apis   = toset(compact(["apigee.googleapis.com", "apihub.googleapis.com", "compute.googleapis.com", local.needs_kms ? "cloudkms.googleapis.com" : ""]))
 }
 
 # ---------------------------------------------------------------- Step 2: APIs
 resource "google_project_service" "apis" {
-  for_each           = toset(["apigee.googleapis.com", "apihub.googleapis.com", "compute.googleapis.com", "cloudkms.googleapis.com"])
+  for_each           = local.required_apis
   project            = var.project_id
   service            = each.value
   disable_on_destroy = false
 }
 
-# ---------------------------------------------------------------- Step 3: Apigee service identity
+# ---------------------------------------------------------------- Step 3: Apigee service identity (needed only for CMEK IAM)
 resource "google_project_service_identity" "apigee" {
+  count    = local.needs_kms ? 1 : 0
   provider = google-beta
   project  = var.project_id
   service  = google_project_service.apis["apigee.googleapis.com"].service
 }
 
-# ---------------------------------------------------------------- Step 4a: CMEK keys
-# Keys are protected from destroy: deleting them makes the org/instance data unreadable.
+# ---------------------------------------------------------------- Step 4a: Optional CMEK keys (use_cmek = true)
+# By default (use_cmek = false), Apigee uses Google-managed encryption keys (GMEK).
 resource "google_kms_key_ring" "runtime_db" {
+  count      = local.use_cmek ? 1 : 0
   name       = "${var.key_ring_prefix}-runtime-db"
   location   = local.runtime_key_loc
   depends_on = [google_project_service.apis]
 }
 
 resource "google_kms_crypto_key" "runtime_db" {
+  count    = local.use_cmek ? 1 : 0
   name     = "runtime-db"
-  key_ring = google_kms_key_ring.runtime_db.id
+  key_ring = google_kms_key_ring.runtime_db[0].id
   lifecycle {
     prevent_destroy = true
   }
 }
 
 resource "google_kms_crypto_key_iam_member" "runtime_db" {
-  crypto_key_id = google_kms_crypto_key.runtime_db.id
+  count         = local.use_cmek ? 1 : 0
+  crypto_key_id = google_kms_crypto_key.runtime_db[0].id
   role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
-  member        = google_project_service_identity.apigee.member
+  member        = google_project_service_identity.apigee[0].member
 }
 
 resource "google_kms_key_ring" "control_plane" {
@@ -70,7 +77,7 @@ resource "google_kms_crypto_key_iam_member" "control_plane" {
   count         = local.cp_keys ? 1 : 0
   crypto_key_id = google_kms_crypto_key.control_plane[0].id
   role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
-  member        = google_project_service_identity.apigee.member
+  member        = google_project_service_identity.apigee[0].member
 }
 
 resource "google_kms_key_ring" "consumer_data" {
@@ -93,25 +100,26 @@ resource "google_kms_crypto_key_iam_member" "consumer_data" {
   count         = local.cp_keys ? 1 : 0
   crypto_key_id = google_kms_crypto_key.consumer_data[0].id
   role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
-  member        = google_project_service_identity.apigee.member
+  member        = google_project_service_identity.apigee[0].member
 }
 
 # ---------------------------------------------------------------- Step 4b: organization
 resource "google_apigee_organization" "org" {
   project_id                           = var.project_id
   display_name                         = var.project_id
-  description                          = "Apigee X ${var.billing_type} organization (no VPC peering), managed by Terraform"
+  description                          = "Apigee X ${var.billing_type} organization (PSC / no VPC peering), managed by Terraform"
   runtime_type                         = "CLOUD"
   billing_type                         = var.billing_type
   disable_vpc_peering                  = true
   analytics_region                     = local.data_residency ? null : coalesce(var.analytics_region, var.region)
-  runtime_database_encryption_key_name = google_kms_crypto_key.runtime_db.id
+  runtime_database_encryption_key_name = local.use_cmek ? google_kms_crypto_key.runtime_db[0].id : null
 
   api_consumer_data_location            = local.data_residency ? var.consumer_data_region : null
   control_plane_encryption_key_name     = local.cp_keys ? google_kms_crypto_key.control_plane[0].id : null
   api_consumer_data_encryption_key_name = local.cp_keys ? google_kms_crypto_key.consumer_data[0].id : null
 
   depends_on = [
+    google_project_service.apis,
     google_kms_crypto_key_iam_member.runtime_db,
     google_kms_crypto_key_iam_member.control_plane,
     google_kms_crypto_key_iam_member.consumer_data,
@@ -120,30 +128,33 @@ resource "google_apigee_organization" "org" {
 
 # ---------------------------------------------------------------- Step 5: runtime instance
 resource "google_kms_key_ring" "disk" {
+  count      = local.use_cmek ? 1 : 0
   name       = "${var.key_ring_prefix}-disk-${var.region}"
   location   = var.region
   depends_on = [google_project_service.apis]
 }
 
 resource "google_kms_crypto_key" "disk" {
+  count    = local.use_cmek ? 1 : 0
   name     = "disk"
-  key_ring = google_kms_key_ring.disk.id
+  key_ring = google_kms_key_ring.disk[0].id
   lifecycle {
     prevent_destroy = true
   }
 }
 
 resource "google_kms_crypto_key_iam_member" "disk" {
-  crypto_key_id = google_kms_crypto_key.disk.id
+  count         = local.use_cmek ? 1 : 0
+  crypto_key_id = google_kms_crypto_key.disk[0].id
   role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
-  member        = google_project_service_identity.apigee.member
+  member        = google_project_service_identity.apigee[0].member
 }
 
 resource "google_apigee_instance" "instance" {
   org_id                   = google_apigee_organization.org.id
   name                     = local.instance_name
   location                 = var.region
-  disk_encryption_key_name = google_kms_crypto_key.disk.id
+  disk_encryption_key_name = local.use_cmek ? google_kms_crypto_key.disk[0].id : null
   consumer_accept_list     = distinct(concat([var.project_id], var.consumer_accept_list))
 
   timeouts {
