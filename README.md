@@ -5,7 +5,7 @@ use cases:
 
 | Use case | Skill | What you get |
 |---|---|---|
-| **Provision Apigee X** (Terraform) | [`apigee-x-provisioning`](skills/apigee-x-provisioning/SKILL.md) | Terraform module + `provision.py`: non-peered paid org, **PAYG INTERMEDIATE env + Analytics** by default, CMEK, PSC + HTTPS LB, sample proxy |
+| **Provision Apigee X** (Terraform) | [`apigee-x-provisioning`](skills/apigee-x-provisioning/SKILL.md) | Full-fledged paid org Terraform module + `provision.py` (`wizard`, `plan`, `apply`, `export`): defaults to **PAYG + `INTERMEDIATE` env with Analytics + PSC + Google-managed keys & cert + no Data Residency + `nip.io`**; also supports `SUBSCRIPTION`, `VPC_PEERING`, CMEK, Data Residency, custom domains + Cloud DNS, multi-region HA, Cloud Armor, Static NAT IPs & Southbound PSC |
 | Any proxy task (start here) | [`apigee-proxy-builder`](skills/apigee-proxy-builder/SKILL.md) | 24 policy/flow references (incl. official best-practices and security-architecture checklists), `validate_bundle.py`, `deploy_bundle.sh` |
 | **API** Management (REST) | [`apigee-api-proxy`](skills/apigee-api-proxy/SKILL.md) | `scaffold_api_proxy.py` (API key / OAuth / JWT, OAS validation, quota, cache, CORS, JSON/XML threat protection, backend mTLS), `scaffold_shared_flow.py` |
 | **AI** Gateway (LLM) | [`apigee-ai-gateway`](skills/apigee-ai-gateway/SKILL.md) | `scaffold_ai_gateway.py` (Gemini + Claude, `/auto` routing, Model Armor, token quota, semantic cache) |
@@ -175,7 +175,8 @@ For agents that follow the open `.agents/skills/<name>/SKILL.md` standard (OpenA
 ## Five-minute tour
 
 ```bash
-# 0. No Apigee org yet? Provision one (PAYG, INTERMEDIATE env 'dev', Analytics on, PSC + HTTPS LB)
+# 0. No Apigee org yet? Provision a paid org (defaults: PAYG, INTERMEDIATE + Analytics, PSC, GMEK, Google cert, no DR, nip.io)
+python3 skills/apigee-x-provisioning/scripts/provision.py wizard                                     # interactive Q&A
 python3 skills/apigee-x-provisioning/scripts/provision.py plan  --project my-proj --region us-central1
 python3 skills/apigee-x-provisioning/scripts/provision.py apply --project my-proj --region us-central1 --sample
 source apigee-x-infra/apigee-x.env
@@ -234,7 +235,7 @@ skills/
   apigee-ai-gateway/         scaffold_ai_gateway.py, references/model_routing_playbook.md
   apigee-mcp-gateway/        scaffold_mcp_proxy.py, references/mcp_rest_bridge.md
   apigee-proxy-lifecycle/    apigee_ctl.py, bundle_edit.py, references/update_playbook.md
-  apigee-x-provisioning/     terraform/ (module + mocked-provider tests), scripts/provision.py
+  apigee-x-provisioning/     terraform/ (full-fledged paid module + 11 mocked-provider tests), scripts/provision.py, references/
 rules/                       apigee_proxy_standards.md, security_and_governance.md (auto-applied to bundle files)
 agents/                      apigee-architect.md, apigee-gateway-tester.md (subagent personas)
 examples/specs/              sample OpenAPI spec

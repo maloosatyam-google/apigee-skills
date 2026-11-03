@@ -415,9 +415,9 @@ class Lifecycle(Base):
 class Provisioning(Base):
     """apigee-x-provisioning wrapper (fake terraform) and Terraform module tests (real terraform, mocked providers)."""
 
-    def _run(self, *args, ok=True):
+    def _run(self, *args, ok=True, stdin=None):
         env = dict(os.environ, TERRAFORM=os.path.join(ROOT, "tests", "fake_terraform.py"), FAKE_TF_LOG=self.p("tf.log"))
-        return py(PROVISION, *args, "--workdir", self.p("infra"), env=env, ok=ok)
+        return py(PROVISION, *args, "--workdir", self.p("infra"), env=env, ok=ok, stdin=stdin)
 
     def test_defaults_payg_intermediate_analytics(self):
         self._run("apply", "--project", "my-proj", "--region", "us-central1", "--auto-approve")
@@ -425,27 +425,84 @@ class Provisioning(Base):
         self.assertEqual(v["billing_type"], "PAYG")
         self.assertEqual(v["environments"], {"dev": {}})          # module defaults: INTERMEDIATE + analytics
         self.assertEqual(v["routing"], "external")
+        self.assertNotIn("use_cmek", v)                           # GMEK default
+        self.assertNotIn("network_mode", v)                       # PSC default
+        self.assertNotIn("control_plane_location", v)             # without Data Residency default
+        self.assertNotIn("envgroup_hostnames", v)                 # nip.io default
         log = open(self.p("tf.log")).read()
         self.assertIn("init -input=false", log)
         self.assertIn("plan -input=false -out=tfplan", log)
         self.assertIn("apply -input=false tfplan", log)
         self.assertIn("APIGEE_ORG=my-proj", open(self.p("infra", "apigee-x.env")).read())
         self.assertTrue(os.path.isfile(self.p("infra", "main.tf")))
+        self.assertTrue(os.path.isfile(self.p("infra", "enterprise.tf")))
 
-    def test_env_specs_hostnames_and_backend(self):
-        self._run("plan", "--project", "p", "--region", "europe-west1", "--env", "dev",
-                  "--env", "test:BASE:noanalytics@nonprod", "--env", "prod:COMPREHENSIVE",
-                  "--hostname", "prod-group=api.example.com", "--state-bucket", "tf-state")
+    def test_interactive_wizard_defaults_and_export(self):
+        # Press Enter on every optional prompt -> accepts PAYG, INTERMEDIATE+Analytics, PSC, GMEK, no DR, external, nip.io, Google cert
+        answers = "\n".join([
+            "wiz-proj",      # 1. project
+            "asia-south1",   # 2. primary region
+            "",              #    additional regions (none)
+            "",              # 3. billing (default PAYG)
+            "",              # 4. environments (default dev:INTERMEDIATE)
+            "",              # 5. network_mode (default PSC)
+            "",              #    existing VPC (auto-create)
+            "",              # 6. encryption (default GMEK)
+            "",              # 7. data residency (default n)
+            "",              # 8. routing (default external)
+            "",              # 9. domain (default nip.io)
+            "",              # 10. cert_mode (default google_managed)
+            "",              # 11. enterprise options (default n)
+            "export",        # action -> export standalone HCL package
+        ]) + "\n"
+        self._run("wizard", stdin=answers)
+        tfvars_hcl = open(self.p("infra", "terraform.tfvars")).read()
+        self.assertIn('project_id = "wiz-proj"', tfvars_hcl)
+        self.assertIn('region = "asia-south1"', tfvars_hcl)
+        self.assertIn('billing_type = "PAYG"', tfvars_hcl)
+        self.assertIn('type = "INTERMEDIATE"', tfvars_hcl)
+        self.assertTrue(os.path.isfile(self.p("infra", "routing.tf")))
+
+    def test_env_specs_hostnames_and_enterprise_options(self):
+        self._run(
+            "plan", "--project", "p", "--region", "europe-west1",
+            "--additional-region", "europe-west4",
+            "--network-mode", "VPC_PEERING",
+            "--env", "dev",
+            "--env", "test:BASE:noanalytics@nonprod",
+            "--env", "prod:COMPREHENSIVE",
+            "--hostname", "prod-group=api.example.com",
+            "--dns-zone", "example-zone",
+            "--cloud-armor", "--http-redirect", "--nat-ips", "--cmek",
+            "--addon", "api_security",
+            "--southbound-psc", "orders=projects/bp/regions/europe-west1/serviceAttachments/sa",
+            "--peered-dns", "corp=corp.internal",
+            "--state-bucket", "tf-state",
+        )
         v = json.load(open(self.p("infra", "terraform.tfvars.json")))
+        self.assertEqual(v["network_mode"], "VPC_PEERING")
+        self.assertEqual(v["additional_regions"], {"europe-west4": {}})
         self.assertEqual(v["environments"]["test"], {"type": "BASE", "analytics": False, "envgroup": "nonprod"})
         self.assertEqual(v["environments"]["prod"], {"type": "COMPREHENSIVE"})
         self.assertEqual(v["envgroup_hostnames"], {"prod-group": ["api.example.com"]})
+        self.assertEqual(v["dns_managed_zone"], "example-zone")
+        self.assertTrue(v["enable_cloud_armor"])
+        self.assertTrue(v["enable_http_redirect"])
+        self.assertTrue(v["enable_nat_ips"])
+        self.assertTrue(v["use_cmek"])
+        self.assertEqual(v["addons"], {"api_security": True})
+        self.assertEqual(v["peered_dns_zones"], {"corp": {"domain": "corp.internal."}})
+        self.assertIn("orders", v["southbound_psc_endpoints"])
         self.assertIn('bucket = "tf-state"', open(self.p("infra", "backend.tf")).read())
         self.assertNotIn("apply", open(self.p("tf.log")).read())
 
-    def test_rejects_bad_input_and_destroy(self):
+    def test_rejects_bad_input_evaluation_and_destroy(self):
+        self._run("plan", "--project", "p", "--region", "r", "--billing", "EVALUATION", ok=False)
         self._run("plan", "--project", "p", "--region", "r", "--env", "dev:HUGE", ok=False)
         self._run("plan", "--project", "p", "--region", "r", "--routing", "internal", ok=False)
+        self._run("plan", "--project", "p", "--region", "r", "--routing", "external-regional", ok=False)
+        self._run("plan", "--project", "p", "--region", "r", "--control-plane-location", "us", ok=False)
+        self._run("plan", "--project", "p", "--region", "r", "--peered-dns", "z=corp.internal", ok=False)
         self._run("destroy", ok=False)
 
     @unittest.skipUnless(shutil.which(os.environ.get("TERRAFORM", "terraform")), "terraform not installed")
