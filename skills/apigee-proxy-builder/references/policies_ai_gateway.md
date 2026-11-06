@@ -78,8 +78,26 @@ streaming not supported), for the same reason.
 </SanitizeModelResponse>
 ```
 
-- Run in the ProxyEndpoint PostFlow Response with `response.status.code = 200`.
-- **SSE streaming (`1-18-0-apigee-7`+, Oct 2026):** `SanitizeModelResponse` supports continuous-scan bidirectional gRPC streaming over Server-Sent Events (`text/event-stream` / `<EventFlow>`), preserving native LLM provider SSE JSON envelopes and event framing.
+- Run in the ProxyEndpoint PostFlow Response with `response.status.code = 200 and flow.is_streaming != "true"`.
+- **SSE streaming (`<ContinuousScan>true</ContinuousScan>` in `<EventFlow content-type="text/event-stream">`):**
+  `SanitizeModelResponse` supports whole-stream bidirectional gRPC sanitization over SSE. With `<ContinuousScan>true</ContinuousScan>`,
+  Apigee checks the entire stream over a single Model Armor request (no total-token limit; transient drops reconnect up to twice) and
+  holds each SSE event until verified clean, then releases it unchanged and in order. Point `<LLMResponseSource>` at `response.event.current.data`
+  (`response.content` is empty during SSE!) and place `SanitizeModelResponse` **before** `LLMTokenQuota` and `DataCapture` in `<EventFlow><Response>`:
+  ```xml
+  <SanitizeModelResponse async="false" continueOnError="false" enabled="true" name="SMR-SanitizeModelResponseSSE">
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+    <ModelArmor>
+      <TemplateName>projects/{PROJECT}/locations/{REGION}/templates/{RESPONSE_TEMPLATE}</TemplateName>
+    </ModelArmor>
+    <!-- Gemini SSE: $.candidates[-1].content.parts[-1].text | OpenAI SSE: $.choices[-1].delta.content | Claude SSE: $.delta.text -->
+    <LLMResponseSource>{jsonPath('$.candidates[-1].content.parts[-1].text',response.event.current.data,true)}</LLMResponseSource>
+    <ContinuousScan>true</ContinuousScan>
+  </SanitizeModelResponse>
+  ```
+  Note: `<ContinuousScan>` is supported **only** on `SanitizeModelResponse` (not `SanitizeUserPrompt`). With `continueOnError="false"`,
+  if a filter matches mid-stream, previously clean events are already delivered, Apigee emits an SSE fault event
+  (`steps.sanitize.model.response.FilterMatched`), and closes the stream immediately without sending the unsafe text.
 - `<FunctionCallSource>` (`1-18-0-apigee-2`+) extracts function-call arguments from model responses as a fallback when `<LLMResponseSource>` returns empty.
 - The default extraction is Gemini-shaped. If a target returns another shape (for example Anthropic
   `content[]`), either normalise the response to Gemini first or skip the step for that provider.
@@ -180,8 +198,26 @@ values are only a fallback. When `LLMTokenQuota` and `PromptTokenLimit` execute,
    use up quota.
 5. **`ratelimit.{CountOnly}.allowed.count` is `Long.MAX_VALUE`.** For "x% used" warnings, read
    the limit from `verifyapikey.{VA}.apiproduct.developer.llmQuota.limit` instead.
-6. For SSE, place the count policy in an `<EventFlow content-type="text/event-stream"><Response>`. It
-   counts only on the event that carries usage metadata.
+6. **For SSE streaming (`<EventFlow content-type="text/event-stream"><Response>`), add a separate CountOnly policy (`LTQ-TokenCountSSE`) sharing the exact same `<SharedName>`, `<Identifier>`, and `<LLMModelSource>`:**
+   - Read from `response.event.current.data` (`response.content` is empty during SSE) and set `jsonPath`'s 3rd argument (`want-array`) to **`false`** so a scalar integer is returned instead of an array.
+   - Guard the `<Step>` on the **final** Gemini SSE usage chunk (`finishReason` / `candidatesTokenCount`), because intermediate Gemini SSE chunks repeat `promptTokenCount` inside `usageMetadata.totalTokenCount`:
+   ```xml
+   <LLMTokenQuota continueOnError="true" enabled="true" name="LTQ-TokenCountSSE" type="rollingwindow">
+     <Allow count="1000" countRef="verifyapikey.VA-VerifyAPIKey.apiproduct.developer.llmQuota.limit"/>
+     <Interval ref="verifyapikey.VA-VerifyAPIKey.apiproduct.developer.llmQuota.interval">1</Interval>
+     <TimeUnit ref="verifyapikey.VA-VerifyAPIKey.apiproduct.developer.llmQuota.timeunit">minute</TimeUnit>
+     <Distributed>true</Distributed>
+     <Synchronous>true</Synchronous>
+     <Identifier ref="flow.emailId"/>
+     <LLMTokenUsageSource>{jsonPath('$.usageMetadata.totalTokenCount',response.event.current.data,false)}</LLMTokenUsageSource>
+     <LLMModelSource>{firstnonnull(flow.quota_model,flow.model)}</LLMModelSource>
+     <CountOnly>true</CountOnly>
+     <SharedName>common-counter</SharedName>
+   </LLMTokenQuota>
+   <!-- Attached in streaming TargetEndpoint <EventFlow content-type="text/event-stream"><Response> with:
+        <Condition>response.event.current.data JavaRegex "(?s).*(\"finishReason\"|\"candidatesTokenCount\").*"</Condition>
+        And guard buffered PostFlow LTQ-TokenCount with: flow.is_streaming != "true" -->
+   ```
 
 Variables: `ratelimit.{policy}.used.count`, `.allowed.count`, `.exceed.count`, `.expiry.time`,
 `.failed`. Faults: `policies.llmtokenquota.LLMTokenQuotaViolation` (429),
@@ -238,7 +274,7 @@ Variables: `ratelimit.{policy}.used.count`, `.allowed.count`, `.exceed.count`, `
   flows on `flow.cached`, because it still reads "true" there on a miss.
 - The cache key is the prompt only. The model is **not** part of the key, so do not route the
   request (for example with a classifier callout) before the lookup.
-- Make it opt-in, for example with header `x-use-cache: true`. Use `continueOnError="true"` so a
+- Make it opt-in, for example with header `x-use-cache: true`, and **bypass semantic cache on SSE streaming requests** (`flow.is_streaming != "true"`) because `SemanticCacheLookup` returns a buffered `application/json` payload (not `text/event-stream`) and `SemanticCachePopulate` reads buffered `response.content` (empty during SSE). Use `continueOnError="true"` so a
   Vector Search outage degrades to a miss.
 - Faults: `steps.semanticcache.lookup.{EmbeddingsAPIFailed|VectorSearchAPIFailed|FailedToExtractUserPrompt|...}`,
   `steps.semanticcache.populate.{VectorSearchUpsertAPIFailed|...}`.

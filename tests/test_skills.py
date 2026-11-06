@@ -144,10 +144,33 @@ class Scaffolds(Base):
         models = [c["llmOperations"][0]["model"] for c in prod["llmOperationGroup"]["operationConfigs"]]
         self.assertIn("auto", models)
         self.assertTrue(any(a["name"] == "routing.model.coding" for a in prod["attributes"]))
+        # Verify SSE targets, RouteRule ordering, EventFlow policies and streaming guards
+        self.assertLess(xml.index('name="claude-stream-target"'), xml.index('name="claude-target"'))
+        self.assertLess(xml.index('name="claude-target"'), xml.index('name="gemini-stream-target"'))
+        self.assertLess(xml.index('name="gemini-stream-target"'), xml.index('name="gemini-target"'))
+        self.assertIn('flow.is_streaming != "true"', xml)
+        gem_st = open(os.path.join(out, "apiproxy/targets/gemini-vertex-stream-target.xml")).read()
+        self.assertIn('<EventFlow name="EventFlow" content-type="text/event-stream">', gem_st)
+        self.assertIn('<Property name="response.streaming.enabled">true</Property>', gem_st)
+        self.assertLess(gem_st.index("SMR-SanitizeModelResponseSSE"), gem_st.index("LTQ-TokenCountSSE"))
+        claude_st = open(os.path.join(out, "apiproxy/targets/claude-vertex-stream-target.xml")).read()
+        self.assertIn("JS-FormatClaudeStream", claude_st)
+        self.assertLess(claude_st.index("SMR-SanitizeModelResponseSSE"), claude_st.index("LTQ-TokenCountSSE"))
 
     def test_ai_gateway_minimal(self):
         py(AI, "--out", self.p("ai"), "--project", "p")
         self.validate(self.p("ai"))
+        self.assertTrue(os.path.isfile(self.p("ai", "apiproxy/targets/gemini-vertex-stream-target.xml")))
+
+    def test_ai_gateway_no_sse_and_regional(self):
+        out = self.p("ai_nosse")
+        py(AI, "--out", out, "--project", "p", "--model-location", "us-central1", "--claude", "--token-quota", "--no-sse")
+        self.validate(out)
+        self.assertFalse(os.path.exists(os.path.join(out, "apiproxy/targets/gemini-vertex-stream-target.xml")))
+        self.assertFalse(os.path.exists(os.path.join(out, "apiproxy/targets/claude-vertex-stream-target.xml")))
+        self.assertTrue(os.path.isfile(os.path.join(out, "apiproxy/policies/RF-StreamingNotSupported.xml")))
+        route = open(os.path.join(out, "apiproxy/policies/AM-RouteGeminiTarget.xml")).read()
+        self.assertIn("https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1/", route)
 
     def test_mcp(self):
         out = self.p("mcp")
@@ -178,7 +201,33 @@ v=run(J+'/AutoRouting.js',{"routerResponse.content":JSON.stringify({candidates:[
 assert.strictEqual(v["flow.model"],"claude-opus-5-5"); assert.strictEqual(v["flow.target_provider"],"anthropic");
 v=run(J+'/AutoRouting.js',{},{defaultModel:"g"}); assert.strictEqual(v["flow.model"],"g"); assert.strictEqual(v["flow.router_category"],"general");
 v=run(J+'/ExtractPrompt.js',{"flow.model":"auto","request.content":JSON.stringify({contents:[{parts:[{text:"q"}]}]})});
-assert.strictEqual(v["flow.quota_model"],"auto"); assert.strictEqual(v["flow.userPrompt"],"q");
+assert.strictEqual(v["flow.quota_model"],"auto"); assert.strictEqual(v["flow.userPrompt"],"q"); assert.strictEqual(v["flow.is_streaming"],"false");
+v=run(J+'/ExtractPrompt.js',{"flow.model":"gemini-3.6-flash","proxy.pathsuffix":"/models/gemini-3.6-flash:streamGenerateContent","request.content":JSON.stringify({contents:[{parts:[{text:"s"}]}]})});
+assert.strictEqual(v["flow.is_streaming"],"true"); assert.strictEqual(v["flow.userPrompt"],"s");
+v=run(J+'/ExtractPrompt.js',{"request.content":JSON.stringify({messages:[{role:"user",content:"m"}],stream:true})});
+assert.strictEqual(v["flow.is_streaming"],"true"); assert.strictEqual(v["flow.userPrompt"],"m");
+v=run(J+'/ClaudeRequestPrep.js',{"flow.is_streaming":"true","request.content":JSON.stringify({contents:[{role:"user",parts:[{text:"hi"}]}]})});
+assert.strictEqual(JSON.parse(v["request.content"]).stream,true);
+v=run(J+'/StreamMetrics.js',{"response.event.current.data":JSON.stringify({modelVersion:"gemini-3.6-flash",usageMetadata:{promptTokenCount:5,candidatesTokenCount:7,totalTokenCount:12}})});
+assert.strictEqual(v["flow.totalTokenCount"],"12"); assert.strictEqual(v["flow.promptTokenCount"],"5");
+// Full Claude SSE -> Gemini SSE stream lifecycle (text + tool_use + final usage)
+let ctx={"flow.convert_claude_to_gemini_resp":"true","flow.model":"claude-haiku-5-5"};
+ctx=run(J+'/FormatClaudeStream.js',Object.assign(ctx,{"response.event.current.data":JSON.stringify({type:"message_start",message:{model:"claude-haiku-5-5",usage:{input_tokens:12}}})}));
+assert.strictEqual(ctx["response.event.current.content"],""); assert.strictEqual(ctx["flow.claude_input_tokens"],"12");
+ctx=run(J+'/FormatClaudeStream.js',Object.assign(ctx,{"response.event.current.data":JSON.stringify({type:"content_block_delta",delta:{type:"text_delta",text:"Hello"}})}));
+assert.strictEqual(JSON.parse(ctx["response.event.current.data"]).candidates[0].content.parts[0].text,"Hello");
+assert.ok(ctx["response.event.current.content"].indexOf("data: ")===0);
+ctx=run(J+'/FormatClaudeStream.js',Object.assign(ctx,{"response.event.current.data":JSON.stringify({type:"content_block_start",content_block:{type:"tool_use",id:"toolu_9",name:"lookup"}})}));
+ctx=run(J+'/FormatClaudeStream.js',Object.assign(ctx,{"response.event.current.data":JSON.stringify({type:"content_block_delta",delta:{type:"input_json_delta",partial_json:'{"id":'}})}));
+ctx=run(J+'/FormatClaudeStream.js',Object.assign(ctx,{"response.event.current.data":JSON.stringify({type:"content_block_delta",delta:{type:"input_json_delta",partial_json:'42}'}})}));
+ctx=run(J+'/FormatClaudeStream.js',Object.assign(ctx,{"response.event.current.data":JSON.stringify({type:"content_block_stop"})}));
+assert.strictEqual(JSON.parse(ctx["response.event.current.data"]).candidates[0].content.parts[0].functionCall.args.id,42);
+ctx=run(J+'/FormatClaudeStream.js',Object.assign(ctx,{"response.event.current.data":JSON.stringify({type:"message_delta",delta:{stop_reason:"end_turn"},usage:{output_tokens:8}})}));
+let fin=JSON.parse(ctx["response.event.current.data"]);
+assert.strictEqual(fin.candidates[0].finishReason,"STOP"); assert.strictEqual(fin.usageMetadata.totalTokenCount,20); assert.strictEqual(ctx["flow.totalTokenCount"],"20");
+// Native Anthropic SSE pass-through mode preserves raw event data while capturing tokens
+let nat=run(J+'/FormatClaudeStream.js',{"flow.claude_input_tokens":"3","response.event.current.data":'{"type":"message_delta","usage":{"output_tokens":4}}'});
+assert.strictEqual(nat["response.event.current.data"],'{"type":"message_delta","usage":{"output_tokens":4}}'); assert.strictEqual(nat["flow.totalTokenCount"],"7");
 JSON.parse(run(J+'/PrepRouterRequest.js',{"flow.userPrompt":"x"})["flow.routerBody"]);
 console.log("ok");
 """
@@ -248,6 +297,31 @@ class ValidatorCatchesBugs(Base):
         self._sub(f, "COSINE_DISTANCE", "MANHATTAN_DISTANCE")
         r = py(VALIDATE, out, ok=False)
         self.assertIn("invalid <DistanceMeasureType>", r.stdout)
+
+    def test_sse_eventflow_violations(self):
+        out = self.p("ai_sse")
+        py(AI, "--out", out, "--project", "p", "--token-quota", "--armor-region", "us-central1")
+        st = os.path.join(out, "apiproxy/targets/gemini-vertex-stream-target.xml")
+        # 1. Wrong content-type, missing response.streaming.enabled, and disallowed AssignMessage in EventFlow
+        self._sub(st, 'content-type="text/event-stream"', 'content-type="application/json"')
+        self._sub(st, '<Property name="response.streaming.enabled">true</Property>', "")
+        self._sub(st, "<Step>\n        <Name>JS-StreamMetrics</Name>",
+                  "<Step><Name>AM-RemoveAuthorization</Name></Step>\n      <Step>\n        <Name>JS-StreamMetrics</Name>")
+        # 2. LTQ in EventFlow with want-array=true + SMR reading response.content + SUP with ContinuousScan
+        self._sub(self._pol(out, "LTQ-TokenCountSSE"), "response.event.current.data,false", "response.event.current.data,true")
+        self._sub(self._pol(out, "SMR-SanitizeModelResponseSSE"), "response.event.current.data", "response.content")
+        self._sub(self._pol(out, "SUP-UserPrompt"), "</SanitizeUserPrompt>",
+                  "  <ContinuousScan>true</ContinuousScan>\n</SanitizeUserPrompt>")
+        # 3. Policy outside EventFlow referencing response.event.current.data
+        self._sub(self._pol(out, "LTQ-TokenCount"), "response.content", "response.event.current.data")
+        r = py(VALIDATE, out, "--strict", ok=False)
+        self.assertIn('content-type="text/event-stream"', r.stdout)
+        self.assertIn("response.streaming.enabled", r.stdout)
+        self.assertIn("not allowed in <EventFlow>", r.stdout)
+        self.assertIn("pass false for want-array", r.stdout)
+        self.assertIn("reading response.event.current.data", r.stdout)
+        self.assertIn("supported only on SanitizeModelResponse", r.stdout)
+        self.assertIn("outside <EventFlow>", r.stdout)
 
 
 class ValidatorBestPractices(Base):
@@ -344,6 +418,24 @@ class BundleEdit(Base):
         py(EDIT, "remove-policy", out, "SA-Burst")
         self.validate(out)
         self.assertNotIn("SA-Burst", open(os.path.join(out, "apiproxy/orders-v1.xml")).read())
+
+    def test_eventflow_attach_outline_detach(self):
+        out = self.p("ai_edit")
+        py(AI, "--out", out, "--project", "p")
+        pol = self.p("ML-EventAudit.xml")
+        open(pol, "w").write('<MessageLogging name="ML-EventAudit"><CloudLogging>'
+                             '<LogName>projects/{organization.name}/logs/sse</LogName>'
+                             '<Message contentType="text/plain">{response.event.current.count}</Message>'
+                             '<ResourceType>api</ResourceType></CloudLogging></MessageLogging>')
+        py(EDIT, "add-policy", out, pol)
+        py(EDIT, "attach", out, "ML-EventAudit", "--endpoint", "targets/gemini-vertex-stream-target.xml",
+           "--flow", "EventFlow", "--phase", "Response", "--after", "JS-StreamMetrics")
+        self.validate(out)
+        o = py(EDIT, "outline", out).stdout
+        self.assertIn("EventFlow (content-type=text/event-stream).Response", o)
+        self.assertIn("ML-EventAudit", o)
+        py(EDIT, "remove-policy", out, "ML-EventAudit")
+        self.validate(out)
 
 
 class Lifecycle(Base):

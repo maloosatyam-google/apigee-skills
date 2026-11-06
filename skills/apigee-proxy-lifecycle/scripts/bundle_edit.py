@@ -7,7 +7,7 @@ modified are re-indented). Every command accepts a bundle dir (containing apipro
   outline   DIR                                   print endpoints, flows, steps and conditions
   add-policy DIR POLICY.xml [--force]             copy a policy file into policies/ and register it in the manifest
   add-resource DIR FILE --type jsc|py|xsl|oas|properties|java
-  attach    DIR POLICY --endpoint proxies/default.xml --flow PreFlow|PostFlow|PostClientFlow|<FlowName>|DefaultFaultRule
+  attach    DIR POLICY --endpoint proxies/default.xml --flow PreFlow|PostFlow|PostClientFlow|EventFlow|<FlowName>|DefaultFaultRule
             --phase Request|Response [--condition EXPR] [--before STEP | --after STEP | --first]
   detach    DIR POLICY [--endpoint FILE] [--flow F] [--phase P]   remove matching Steps (all by default)
   remove-policy DIR POLICY                        detach everywhere, delete the file, unregister it
@@ -86,7 +86,20 @@ def find_flow(ep, flow, phase, create=True):
         return dfr  # Steps live directly under DefaultFaultRule
     if ep.tag == "SharedFlow":
         return ep  # Steps live directly under <SharedFlow>
-    if flow in ("PreFlow", "PostFlow", "PostClientFlow"):
+    if flow == "EventFlow":
+        if phase != "Response":
+            sys.exit("EventFlow only supports --phase Response")
+        f = ep.find("EventFlow")
+        if f is None:
+            if not create:
+                return None
+            f = ET.Element("EventFlow", {"name": "EventFlow", "content-type": "text/event-stream"})
+            conn = ep.find("HTTPProxyConnection")
+            if conn is None:
+                conn = ep.find("HTTPTargetConnection")
+            idx = list(ep).index(conn) if conn is not None else len(list(ep))
+            ep.insert(idx, f)
+    elif flow in ("PreFlow", "PostFlow", "PostClientFlow"):
         f = ep.find(flow)
         if f is None:
             if not create:
@@ -160,6 +173,9 @@ def cmd_outline(o):
         for fl in ("PostFlow", "PostClientFlow"):
             for ph in ("Request", "Response"):
                 dump(f"{fl}.{ph}", find_flow(ep, fl, ph, create=False))
+        ef = ep.find("EventFlow")
+        if ef is not None:
+            dump(f"EventFlow (content-type={ef.get('content-type')}).Response", ef.find("Response"))
         for fr in ep.findall("./FaultRules/FaultRule"):
             dump(f"FaultRule '{fr.get('name')}'", fr)
         dump("DefaultFaultRule", ep.find("DefaultFaultRule"))

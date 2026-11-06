@@ -9,25 +9,28 @@ Options:
   --project PROJECT             GCP project hosting Vertex AI / Model Armor
   --model-location global       Vertex location for model calls
   --default-model gemini-3.6-flash
-  --armor-region REGION         enable Model Armor (SUP + SMR); needs templates below
+  --armor-region REGION         enable Model Armor (SUP + buffered SMR + SSE ContinuousScan SMR)
   --prompt-template NAME        Model Armor template for prompts   (default apigee-sanitize-user-prompt)
   --response-template NAME      Model Armor template for responses (default apigee-sanitize-model-response)
-  --cache-region REGION         enable semantic cache (opt-in header x-use-cache: true)
+  --cache-region REGION         enable semantic cache (opt-in header x-use-cache: true; bypassed on SSE)
   --index-endpoint-host HOST    e.g. 123.asia-southeast1-456.vdb.vertexai.goog
   --index-endpoint-id ID  --deployed-index-id ID  --index-id ID
-  --token-quota                 add LLMTokenQuota enforce/count pair (limits from API product llmOperationGroup)
+  --token-quota                 add LLMTokenQuota enforce + buffered/SSE count policies (product llmOperationGroup)
   --prompt-token-limit RATE     add PromptTokenLimit, e.g. 5000pm
-  --claude                      add an Anthropic-on-Vertex target for /models/claude-* with Gemini<->Claude
-                                request/response conversion (one client contract; usage normalised for quotas)
+  --claude                      add Anthropic-on-Vertex buffered + SSE targets for /models/claude-* with
+                                Gemini<->Claude request/response & SSE event conversion (one client contract)
   --claude-model NAME           Claude model id put in the API product (default claude-haiku-5-5)
-  --auto-route                  add POST {basepath}/models/auto:generateContent: a ServiceCallout classifier
-                                (coding / deep_reasoning / simple / general) picks the model from the caller's
-                                API product attributes routing.model.<category>
+  --auto-route                  add POST {basepath}/models/auto:{generateContent|streamGenerateContent}:
+                                classifier ServiceCallout picks routing.model.<category> from API product
   --router-model NAME           classifier model (default gemini-3.5-flash-lite)
+  --sse / --no-sse              enable (default) or disable Server-Sent Events streaming (:streamGenerateContent);
+                                --no-sse rejects streaming requests explicitly with HTTP 501
 
-Generated paths: POST {basepath}/models/{model}:generateContent  (Gemini request shape)
-Every response carries x-gateway-model / -provider / -prompt-tokens / -completion-tokens / -total-tokens /
--cached headers. Also writes api_product.json with the matching llmOperationGroup.
+Generated paths:
+  POST {basepath}/models/{model}:generateContent         (buffered JSON)
+  POST {basepath}/models/{model}:streamGenerateContent   (SSE text/event-stream; ?alt=sse enforced upstream)
+Every response carries x-gateway-model / -provider / -streaming / -prompt-tokens / -completion-tokens /
+-total-tokens / -cached headers. Also writes api_product.json with the matching llmOperationGroup.
 """
 import argparse
 import json
@@ -59,14 +62,22 @@ def main():
     a.add_argument("--claude-model", default="claude-haiku-5-5")
     a.add_argument("--auto-route", action="store_true")
     a.add_argument("--router-model", default="gemini-3.5-flash-lite")
+    sse_group = a.add_mutually_exclusive_group()
+    sse_group.add_argument("--sse", action="store_true", help="enable SSE streaming (default)")
+    sse_group.add_argument("--no-sse", action="store_true", help="disable SSE streaming (return HTTP 501)")
     o = a.parse_args()
     if o.cache_region and not (o.index_endpoint_host and o.index_endpoint_id and o.index_id):
         a.error("--cache-region needs --index-endpoint-host, --index-endpoint-id and --index-id")
+    sse = not o.no_sse
+    vertex_host = "aiplatform.googleapis.com" if o.model_location == "global" else f"{o.model_location}-aiplatform.googleapis.com"
 
     P = {}  # policy name -> xml
     pre, flows_extra, post, tgt_pre = [], [], [], []
     NOT_OPT = 'request.verb != "OPTIONS"'
+    NOT_STREAM = 'flow.is_streaming != "true"'
     CACHE_ON = '(request.header.x-use-cache = "true")'
+    CACHE_ELIGIBLE = f'{CACHE_ON} and ({NOT_STREAM})' if sse else CACHE_ON
+    FINAL_SSE_EVENT = 'response.event.current.data JavaRegex "(?s).*(\\"finishReason\\"|\\"candidatesTokenCount\\").*"'
 
     P["CORS-Headers"] = """<CORS continueOnError="false" enabled="true" name="CORS-Headers">
   <AllowOrigins>{request.header.origin}</AllowOrigins>
@@ -80,7 +91,10 @@ def main():
     P["EV-RequestDetails"] = """<ExtractVariables continueOnError="true" enabled="true" name="EV-RequestDetails">
   <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
   <URIPath>
+    <Pattern ignoreCase="true">/models/{model}:streamGenerateContent</Pattern>
     <Pattern ignoreCase="true">/models/{model}:generateContent</Pattern>
+    <Pattern ignoreCase="true">/models/{model}:streamRawPredict</Pattern>
+    <Pattern ignoreCase="true">/models/{model}:rawPredict</Pattern>
   </URIPath>
   <Source clearPayload="false">request</Source>
   <VariablePrefix>flow</VariablePrefix>
@@ -104,6 +118,19 @@ def main():
 </AssignMessage>"""
     pre += [("CORS-Headers", NOT_OPT), ("EV-RequestDetails", NOT_OPT), ("JS-ExtractPrompt", NOT_OPT),
             ("VA-VerifyAPIKey", NOT_OPT)]
+
+    if not sse:
+        P["RF-StreamingNotSupported"] = """<RaiseFault continueOnError="false" enabled="true" name="RF-StreamingNotSupported">
+  <FaultResponse>
+    <Set>
+      <Payload contentType="application/json">{"error":{"code":501,"status":"UNIMPLEMENTED","message":"SSE streaming is disabled on this gateway. Call :generateContent instead."}}</Payload>
+      <StatusCode>501</StatusCode>
+      <ReasonPhrase>Not Implemented</ReasonPhrase>
+    </Set>
+  </FaultResponse>
+  <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</RaiseFault>"""
+        pre.append(("RF-StreamingNotSupported", f'{NOT_OPT} and flow.is_streaming = "true"'))
 
     if o.armor_region:
         P["SUP-UserPrompt"] = f"""<SanitizeUserPrompt async="false" continueOnError="false" enabled="true" name="SUP-UserPrompt">
@@ -211,8 +238,8 @@ def main():
   </SimilaritySearch>
   <TTLInSeconds>180</TTLInSeconds>
 </SemanticCachePopulate>"""
-        pre += [("AM-SetCacheHitExpected", f"{NOT_OPT} and {CACHE_ON}"),
-                ("SCL-Semantic-Cache-Lookup", f"{NOT_OPT} and {CACHE_ON}")]
+        pre += [("AM-SetCacheHitExpected", f"{NOT_OPT} and {CACHE_ELIGIBLE}"),
+                ("SCL-Semantic-Cache-Lookup", f"{NOT_OPT} and {CACHE_ELIGIBLE}")]
         tgt_pre.append(("AM-SetCacheMiss", CACHE_ON))
 
     if o.token_quota:
@@ -221,7 +248,7 @@ def main():
   <TimeUnit ref="verifyapikey.VA-VerifyAPIKey.apiproduct.developer.llmQuota.timeunit">minute</TimeUnit>
   <Distributed>true</Distributed>
   <Synchronous>true</Synchronous>
-  <!-- Identifier, LLMModelSource and SharedName MUST be identical in both LTQ policies -->
+  <!-- Identifier, LLMModelSource and SharedName MUST be identical in all LTQ policies -->
   <Identifier ref="verifyapikey.VA-VerifyAPIKey.client_id"/>"""
         P["LTQ-TokenEnforce"] = f"""<LLMTokenQuota continueOnError="false" enabled="true" name="LTQ-TokenEnforce" type="rollingwindow">
 {common}
@@ -236,6 +263,14 @@ def main():
   <CountOnly>true</CountOnly>
   <SharedName>common-counter</SharedName>
 </LLMTokenQuota>"""
+        if sse:
+            P["LTQ-TokenCountSSE"] = f"""<LLMTokenQuota continueOnError="true" enabled="true" name="LTQ-TokenCountSSE" type="rollingwindow">
+{common}
+  <LLMTokenUsageSource>{{jsonPath('$.usageMetadata.totalTokenCount',response.event.current.data,false)}}</LLMTokenUsageSource>
+  <LLMModelSource>{{flow.quota_model}}</LLMModelSource>
+  <CountOnly>true</CountOnly>
+  <SharedName>common-counter</SharedName>
+</LLMTokenQuota>"""
     # Conditional flows run only on a semantic-cache miss (a lookup hit short-circuits after the PreFlow).
     # Only the FIRST matching conditional flow runs, so /models/auto must come before the generic /models/* flow,
     # and each flow must carry its own LLMTokenQuota enforce step.
@@ -246,6 +281,7 @@ def main():
     if ltq:
         flows_extra.append(("LLMTokenQuotaFlow", ltq, f'{NOT_OPT} and proxy.pathsuffix JavaRegex "^/models/.*"'))
 
+    buffered_200 = f"response.status.code = 200 and {NOT_STREAM}" if sse else "response.status.code = 200"
     P["EV-ModelResponse"] = """<ExtractVariables continueOnError="true" enabled="true" name="EV-ModelResponse">
   <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
   <JSONPayload>
@@ -258,11 +294,12 @@ def main():
   <Source clearPayload="false">response</Source>
   <VariablePrefix>flow</VariablePrefix>
 </ExtractVariables>"""
-    post.append(("EV-ModelResponse", None))
+    post.append(("EV-ModelResponse", buffered_200))
     if o.token_quota:
-        post.append(("LTQ-TokenCount", 'response.status.code = 200 and flow.cached != "true"'))
+        post.append(("LTQ-TokenCount", f'{buffered_200} and flow.cached != "true"'))
     if o.cache_region:
-        post.append(("SCP-Semantic-Cache-Populate", f'response.status.code = 200 and {CACHE_ON} and flow.cached != "true"'))
+        post.append(("SCP-Semantic-Cache-Populate",
+                     f'response.status.code = 200 and {CACHE_ELIGIBLE} and flow.cached != "true"'))
     if o.armor_region:
         P["SMR-SanitizeModelResponse"] = f"""<SanitizeModelResponse async="false" continueOnError="true" enabled="true" name="SMR-SanitizeModelResponse">
   <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
@@ -271,12 +308,22 @@ def main():
   </ModelArmor>
   <LLMResponseSource>{{jsonPath('$.candidates[-1].content.parts',response.content,true)}}</LLMResponseSource>
 </SanitizeModelResponse>"""
-        post.append(("SMR-SanitizeModelResponse", 'response.status.code = 200'))
+        post.append(("SMR-SanitizeModelResponse", buffered_200))
+        if sse:
+            P["SMR-SanitizeModelResponseSSE"] = f"""<SanitizeModelResponse async="false" continueOnError="false" enabled="true" name="SMR-SanitizeModelResponseSSE">
+  <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+  <ModelArmor>
+    <TemplateName>projects/{o.project}/locations/{o.armor_region}/templates/{o.response_template}</TemplateName>
+  </ModelArmor>
+  <LLMResponseSource>{{jsonPath('$.candidates[-1].content.parts[-1].text',response.event.current.data,true)}}</LLMResponseSource>
+  <ContinuousScan>true</ContinuousScan>
+</SanitizeModelResponse>"""
     P["AM-SetResponseHeaders"] = """<AssignMessage continueOnError="true" enabled="true" name="AM-SetResponseHeaders">
   <Set>
     <Headers>
       <Header name="x-gateway-model">{flow.model}</Header>
       <Header name="x-gateway-provider">{flow.target_provider}</Header>
+      <Header name="x-gateway-streaming">{flow.is_streaming}</Header>
       <Header name="x-gateway-cached">{flow.cached}</Header>
       <Header name="x-gateway-cache-status">{flow.cacheStatus}</Header>
       <Header name="x-gateway-prompt-tokens">{flow.promptTokenCount}</Header>
@@ -292,22 +339,45 @@ def main():
     P["ML-CloudLogging"] = """<MessageLogging continueOnError="true" enabled="true" name="ML-CloudLogging">
   <CloudLogging>
     <LogName>projects/{organization.name}/logs/apigee</LogName>
-    <Message contentType="application/json">{"proxy":"{apiproxy.name}","model":"{flow.model}","provider":"{flow.target_provider}","app":"{developer.app.name}","cached":"{flow.cached}","promptTokens":"{flow.promptTokenCount}","completionTokens":"{flow.candidatesTokenCount}","totalTokens":"{flow.totalTokenCount}","status":"{response.status.code}","fault":"{fault.name}","messageId":"{messageid}"}</Message>
+    <Message contentType="application/json">{"proxy":"{apiproxy.name}","model":"{flow.model}","provider":"{flow.target_provider}","streaming":"{flow.is_streaming}","app":"{developer.app.name}","cached":"{flow.cached}","promptTokens":"{flow.promptTokenCount}","completionTokens":"{flow.candidatesTokenCount}","totalTokens":"{flow.totalTokenCount}","status":"{response.status.code}","fault":"{fault.name}","messageId":"{messageid}"}</Message>
     <ResourceType>api</ResourceType>
   </CloudLogging>
 </MessageLogging>"""
 
-    # Targets
+    # Targets: ALWAYS separate SSE and non-SSE TargetEndpoints (mixing causes empty response.content).
+    # Each entry: target_name -> (pre_req_steps, pre_resp_steps, event_flow_steps_or_None, is_streaming)
     targets = {}
     P["AM-RouteGeminiTarget"] = f"""<AssignMessage continueOnError="false" enabled="true" name="AM-RouteGeminiTarget">
   <AssignVariable><Name>target.copy.pathsuffix</Name><Value>false</Value></AssignVariable>
   <AssignVariable>
     <Name>target.url</Name>
-    <Template>https://aiplatform.googleapis.com/v1/projects/{o.project}/locations/{o.model_location}/publishers/google/models/{{flow.model}}:generateContent</Template>
+    <Template>https://{vertex_host}/v1/projects/{o.project}/locations/{o.model_location}/publishers/google/models/{{flow.model}}:generateContent</Template>
   </AssignVariable>
   <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
 </AssignMessage>"""
-    targets["gemini-vertex-target"] = (tgt_pre + [("AM-RouteGeminiTarget", None)], [])
+    targets["gemini-vertex-target"] = (tgt_pre + [("AM-RouteGeminiTarget", None)], [], None, False)
+
+    if sse:
+        P["AM-RouteGeminiStreamTarget"] = f"""<AssignMessage continueOnError="false" enabled="true" name="AM-RouteGeminiStreamTarget">
+  <AssignVariable><Name>target.copy.pathsuffix</Name><Value>false</Value></AssignVariable>
+  <AssignVariable>
+    <Name>target.url</Name>
+    <Template>https://{vertex_host}/v1/projects/{o.project}/locations/{o.model_location}/publishers/google/models/{{flow.model}}:streamGenerateContent?alt=sse</Template>
+  </AssignVariable>
+  <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</AssignMessage>"""
+        P["JS-StreamMetrics"] = """<Javascript continueOnError="true" enabled="true" timeLimit="200" name="JS-StreamMetrics">
+  <ResourceURL>jsc://StreamMetrics.js</ResourceURL>
+</Javascript>"""
+        gem_ef = []
+        if o.armor_region:
+            gem_ef.append(("SMR-SanitizeModelResponseSSE",
+                           'response.event.current.data != null and response.event.current.data != ""'))
+        if o.token_quota:
+            gem_ef.append(("LTQ-TokenCountSSE", FINAL_SSE_EVENT))
+        gem_ef.append(("JS-StreamMetrics", FINAL_SSE_EVENT))
+        targets["gemini-vertex-stream-target"] = ([("AM-RouteGeminiStreamTarget", None)], [], gem_ef, True)
+
     if o.claude:
         P["AM-RouteClaudeTarget"] = f"""<AssignMessage continueOnError="false" enabled="true" name="AM-RouteClaudeTarget">
   <!-- Anthropic on Vertex: body must be Anthropic Messages shape with "anthropic_version": "vertex-2023-10-16" -->
@@ -326,7 +396,35 @@ def main():
 </Javascript>"""
         targets["claude-vertex-target"] = (
             tgt_pre + [("AM-RouteClaudeTarget", None), ("JS-ClaudeRequestPrep", None)],
-            [("JS-FormatClaudeResponse", 'flow.convert_claude_to_gemini_resp = "true"')])
+            [("JS-FormatClaudeResponse", 'flow.convert_claude_to_gemini_resp = "true"')],
+            None,
+            False,
+        )
+        if sse:
+            P["AM-RouteClaudeStreamTarget"] = f"""<AssignMessage continueOnError="false" enabled="true" name="AM-RouteClaudeStreamTarget">
+  <!-- Anthropic on Vertex SSE: :streamRawPredict with "stream": true in the Anthropic Messages payload -->
+  <AssignVariable><Name>target.copy.pathsuffix</Name><Value>false</Value></AssignVariable>
+  <AssignVariable>
+    <Name>target.url</Name>
+    <Template>https://aiplatform.googleapis.com/v1/projects/{o.project}/locations/global/publishers/anthropic/models/{{flow.model}}:streamRawPredict</Template>
+  </AssignVariable>
+  <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</AssignMessage>"""
+            P["JS-FormatClaudeStream"] = """<Javascript continueOnError="true" enabled="true" timeLimit="200" name="JS-FormatClaudeStream">
+  <ResourceURL>jsc://FormatClaudeStream.js</ResourceURL>
+</Javascript>"""
+            claude_ef = [("JS-FormatClaudeStream", None)]
+            if o.armor_region:
+                claude_ef.append(("SMR-SanitizeModelResponseSSE",
+                                  'response.event.current.data != null and response.event.current.data != ""'))
+            if o.token_quota:
+                claude_ef.append(("LTQ-TokenCountSSE", FINAL_SSE_EVENT))
+            targets["claude-vertex-stream-target"] = (
+                [("AM-RouteClaudeStreamTarget", None), ("JS-ClaudeRequestPrep", None)],
+                [],
+                claude_ef,
+                True,
+            )
 
     # ---- write files
     root = os.path.join(o.out, "apiproxy")
@@ -335,9 +433,13 @@ def main():
     for n, x in P.items():
         open(os.path.join(root, "policies", n + ".xml"), "w").write(H + x + "\n")
     js_files = {"ExtractPrompt.js": JS}
+    if sse:
+        js_files["StreamMetrics.js"] = JS_STREAM_METRICS
     if o.claude:
         js_files["ClaudeRequestPrep.js"] = JS_CLAUDE_REQ
         js_files["FormatClaudeResponse.js"] = JS_CLAUDE_RESP
+        if sse:
+            js_files["FormatClaudeStream.js"] = JS_CLAUDE_STREAM
     if o.auto_route:
         js_files["PrepRouterRequest.js"] = JS_ROUTER_REQ
         js_files["AutoRouting.js"] = JS_AUTO_ROUTING
@@ -368,16 +470,27 @@ def main():
       <Response/>
       <Condition>{cond}</Condition>
     </Flow>""")
-    route_rules = ""
+    rr_lines = []
+    if o.claude and sse:
+        rr_lines.append("""  <RouteRule name="claude-stream-target">
+    <Condition>(flow.target_provider == "anthropic") and (flow.is_streaming == "true")</Condition>
+    <TargetEndpoint>claude-vertex-stream-target</TargetEndpoint>
+  </RouteRule>""")
     if o.claude:
-        route_rules += """  <RouteRule name="claude-target">
+        rr_lines.append("""  <RouteRule name="claude-target">
     <Condition>flow.target_provider == "anthropic"</Condition>
     <TargetEndpoint>claude-vertex-target</TargetEndpoint>
-  </RouteRule>
-"""
-    route_rules += """  <RouteRule name="gemini-target">
+  </RouteRule>""")
+    if sse:
+        rr_lines.append("""  <RouteRule name="gemini-stream-target">
+    <Condition>flow.is_streaming == "true"</Condition>
+    <TargetEndpoint>gemini-vertex-stream-target</TargetEndpoint>
+  </RouteRule>""")
+    rr_lines.append("""  <RouteRule name="gemini-target">
     <TargetEndpoint>gemini-vertex-target</TargetEndpoint>
-  </RouteRule>"""
+  </RouteRule>""")
+    route_rules = "\n".join(rr_lines)
+
     proxy = f"""{H}<ProxyEndpoint name="default">
   <PreFlow name="PreFlow">
     <Request>
@@ -406,8 +519,25 @@ def main():
 </ProxyEndpoint>
 """
     open(os.path.join(root, "proxies/default.xml"), "w").write(proxy)
-    for tname, (treq, tresp) in targets.items():
+    for tname, (treq, tresp, tef, is_stream) in targets.items():
         resp_xml = f"    <Response>\n{steps(tresp)}\n    </Response>" if tresp else "    <Response/>"
+        ef_xml = ""
+        if tef is not None:
+            ef_xml = f"""  <EventFlow name="EventFlow" content-type="text/event-stream">
+    <Response>
+{steps(tef)}
+    </Response>
+  </EventFlow>
+"""
+        props_xml = ""
+        if is_stream:
+            props_xml = """    <Properties>
+      <Property name="response.streaming.enabled">true</Property>
+      <Property name="keepalive.timeout.millis">300000</Property>
+      <Property name="io.timeout.millis">300000</Property>
+    </Properties>
+"""
+        t_host = vertex_host if tname.startswith("gemini-") else "aiplatform.googleapis.com"
         open(os.path.join(root, "targets", tname + ".xml"), "w").write(f"""{H}<TargetEndpoint name="{tname}">
   <PreFlow name="PreFlow">
     <Request>
@@ -415,8 +545,8 @@ def main():
     </Request>
 {resp_xml}
   </PreFlow>
-  <HTTPTargetConnection>
-    <URL>https://aiplatform.googleapis.com</URL>
+{ef_xml}  <HTTPTargetConnection>
+{props_xml}    <URL>https://{t_host}</URL>
     <Authentication>
       <GoogleAccessToken>
         <Scopes><Scope>https://www.googleapis.com/auth/cloud-platform</Scope></Scopes>
@@ -474,12 +604,16 @@ def main():
 JS = textwrap.dedent("""\
     // Extract the user prompt (Gemini / Anthropic / OpenAI / flat) into flow.userPrompt so that
     // SanitizeUserPrompt, PromptTokenLimit and SemanticCacheLookup share one provider-agnostic source.
+    // Also detect SSE streaming (:streamGenerateContent / :streamRawPredict or body.stream === true).
     // flow.quota_model is the model id LLMTokenQuota keys on; it must never change mid-flow.
     var model = context.getVariable("flow.model");
     if (model) { context.setVariable("flow.quota_model", model); }
+    var suffix = String(context.getVariable("proxy.pathsuffix") || "");
+    var isStreaming = /:(streamGenerateContent|streamRawPredict)$/i.test(suffix);
     var body = context.getVariable("request.content") || "";
     try {
       var p = JSON.parse(body), text = "";
+      if (p && p.stream === true) { isStreaming = true; }
       if (p.contents && p.contents.length) {
         var parts = p.contents[p.contents.length - 1].parts || [];
         text = parts.filter(function (x) { return x && x.text; }).map(function (x) { return x.text; }).join(" ");
@@ -491,14 +625,33 @@ JS = textwrap.dedent("""\
       }
       if (text) { context.setVariable("flow.userPrompt", text); }
     } catch (e) { /* non-JSON body: leave unset */ }
+    context.setVariable("flow.is_streaming", isStreaming ? "true" : "false");
+    """)
+
+JS_STREAM_METRICS = textwrap.dedent("""\
+    // Capture final SSE usageMetadata into flow.* inside <EventFlow> so PostClientFlow MessageLogging
+    // (and DataCapture) records token usage on streamed responses, where response.content is empty.
+    try {
+      var raw = context.getVariable("response.event.current.data") || "";
+      if (raw) {
+        var ev = JSON.parse(raw), u = ev.usageMetadata;
+        if (ev.modelVersion) { context.setVariable("flow.responseModelVersion", String(ev.modelVersion)); }
+        if (u) {
+          if (u.promptTokenCount !== undefined) { context.setVariable("flow.promptTokenCount", String(u.promptTokenCount)); }
+          if (u.candidatesTokenCount !== undefined) { context.setVariable("flow.candidatesTokenCount", String(u.candidatesTokenCount)); }
+          if (u.totalTokenCount !== undefined) { context.setVariable("flow.totalTokenCount", String(u.totalTokenCount)); }
+        }
+      }
+    } catch (e) { /* non-JSON SSE event: ignore */ }
     """)
 
 JS_CLAUDE_REQ = textwrap.dedent("""\
-    // Gemini generateContent body -> Anthropic Messages body for Claude on Vertex (:rawPredict).
+    // Gemini generateContent body -> Anthropic Messages body for Claude on Vertex (:rawPredict / :streamRawPredict).
     // Keeps ONE client contract. Rhino (ES5): no let/const/arrow functions.
-    // Handles text, functionCall/functionResponse (tool use), systemInstruction and generationConfig.
+    // Handles text, functionCall/functionResponse (tool use), systemInstruction, generationConfig and SSE streaming.
     try {
       var body = JSON.parse(context.getVariable("request.content") || "{}");
+      var isStream = context.getVariable("flow.is_streaming") === "true";
       var isArr = function (v) { return Object.prototype.toString.call(v) === "[object Array]"; };
       if (isArr(body.contents)) {
         var msgs = [], lastId = {}, seq = 0;
@@ -530,6 +683,7 @@ JS_CLAUDE_REQ = textwrap.dedent("""\
           else { merged.push(msgs[k]); }
         }
         var out = { anthropic_version: "vertex-2023-10-16", messages: merged, max_tokens: 1024 };
+        if (isStream) { out.stream = true; }
         if (body.systemInstruction && isArr(body.systemInstruction.parts)) {
           var sys = [];
           for (var s = 0; s < body.systemInstruction.parts.length; s++) {
@@ -559,6 +713,7 @@ JS_CLAUDE_REQ = textwrap.dedent("""\
         // Already Anthropic-shaped: add the Vertex fields, drop "model" (it is in the URL).
         if (!body.anthropic_version) { body.anthropic_version = "vertex-2023-10-16"; }
         if (!body.max_tokens) { body.max_tokens = 1024; }
+        if (isStream) { body.stream = true; }
         delete body.model;
         context.setVariable("request.content", JSON.stringify(body));
       }
@@ -595,6 +750,92 @@ JS_CLAUDE_RESP = textwrap.dedent("""\
       }
     } catch (e) {
       context.setVariable("flow.claude_format_error", String(e));
+    }
+    """)
+
+JS_CLAUDE_STREAM = textwrap.dedent("""\
+    // Anthropic :streamRawPredict SSE event -> Gemini :streamGenerateContent SSE chunk inside <EventFlow>.
+    // Keeps ONE client contract across text deltas, tool_use blocks, Model Armor continuous scan and
+    // LLMTokenQuota counting. Native Anthropic callers (convert_claude_to_gemini_resp != "true") keep
+    // raw Anthropic SSE events while token counts are still captured for Cloud Logging. Rhino (ES5).
+    try {
+      var raw = context.getVariable("response.event.current.data") || "";
+      var convert = context.getVariable("flow.convert_claude_to_gemini_resp") === "true";
+      if (raw) {
+        var ev = JSON.parse(raw), t = ev.type || "";
+        var model = context.getVariable("flow.claude_stream_model") || context.getVariable("flow.model") || "";
+        var emitGemini = function (obj) {
+          var s = JSON.stringify(obj);
+          context.setVariable("response.event.current.data", s);
+          context.setVariable("response.event.current.content", "data: " + s + "\\n\\n");
+        };
+        var suppress = function () {
+          context.setVariable("response.event.current.data", "");
+          context.setVariable("response.event.current.content", "");
+        };
+        if (t === "message_start") {
+          var m = ev.message || {}, mu = m.usage || {};
+          if (m.model) {
+            model = m.model;
+            context.setVariable("flow.claude_stream_model", model);
+            context.setVariable("flow.responseModelVersion", model);
+          }
+          context.setVariable("flow.claude_input_tokens", String(mu.input_tokens || 0));
+          context.setVariable("flow.promptTokenCount", String(mu.input_tokens || 0));
+          if (convert) { suppress(); }
+        } else if (t === "content_block_start") {
+          var cb = ev.content_block || {};
+          if (cb.type === "tool_use") {
+            context.setVariable("flow.claude_tool_id", cb.id || "");
+            context.setVariable("flow.claude_tool_name", cb.name || "");
+            context.setVariable("flow.claude_tool_json", "");
+          }
+          if (convert) { suppress(); }
+        } else if (t === "content_block_delta") {
+          var d = ev.delta || {};
+          if (d.type === "text_delta" && d.text) {
+            if (convert) {
+              emitGemini({ candidates: [{ content: { role: "model", parts: [{ text: d.text }] } }], modelVersion: model });
+            }
+          } else if (d.type === "input_json_delta") {
+            var prev = context.getVariable("flow.claude_tool_json") || "";
+            context.setVariable("flow.claude_tool_json", prev + (d.partial_json || ""));
+            if (convert) { suppress(); }
+          } else if (convert) { suppress(); }
+        } else if (t === "content_block_stop") {
+          var tname = context.getVariable("flow.claude_tool_name") || "";
+          if (tname) {
+            var tid = context.getVariable("flow.claude_tool_id") || "", args = {};
+            try { args = JSON.parse(context.getVariable("flow.claude_tool_json") || "{}"); } catch (je) { args = {}; }
+            context.setVariable("flow.claude_tool_name", "");
+            context.setVariable("flow.claude_tool_id", "");
+            context.setVariable("flow.claude_tool_json", "");
+            if (convert) {
+              emitGemini({ candidates: [{ content: { role: "model", parts: [{ functionCall: { id: tid, name: tname, args: args } }] } }], modelVersion: model });
+            }
+          } else if (convert) { suppress(); }
+        } else if (t === "message_delta") {
+          var pin = parseInt(context.getVariable("flow.claude_input_tokens") || "0", 10) || 0;
+          var pout = (ev.usage && ev.usage.output_tokens) || 0;
+          var tot = pin + pout;
+          context.setVariable("flow.promptTokenCount", String(pin));
+          context.setVariable("flow.candidatesTokenCount", String(pout));
+          context.setVariable("flow.totalTokenCount", String(tot));
+          if (convert) {
+            var sr = (ev.delta && ev.delta.stop_reason) || "end_turn";
+            var fin = sr === "max_tokens" ? "MAX_TOKENS" : (sr === "refusal" ? "SAFETY" : "STOP");
+            emitGemini({
+              candidates: [{ content: { role: "model", parts: [{ text: "" }] }, finishReason: fin }],
+              usageMetadata: { promptTokenCount: pin, candidatesTokenCount: pout, totalTokenCount: tot },
+              modelVersion: model
+            });
+          }
+        } else if (convert) {
+          suppress();
+        }
+      }
+    } catch (e) {
+      context.setVariable("flow.claude_stream_error", String(e));
     }
     """)
 

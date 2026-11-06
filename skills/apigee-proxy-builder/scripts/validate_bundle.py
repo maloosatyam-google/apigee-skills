@@ -24,6 +24,10 @@ Checks:
       - conditions reference parsepayload.<name>.* only for an existing ParsePayload policy
       - Quota/LLMTokenQuota with continueOnError="true" + EnforceOnly need a Step condition that checks
         ratelimit.<name>.failed / exceed.count (otherwise the limit is never enforced)
+      - SSE / <EventFlow> sanity: content-type="text/event-stream", <= 4 policies in <Response> only,
+        7-policy allowlist (DataCapture/Javascript/LLMTokenQuota/MessageLogging/PublishMessage/RaiseFault/
+        SanitizeModelResponse), response.streaming.enabled=true on TargetEndpoint, and response.event.current.data
+        sources (not response.content) for LLMTokenQuota / SanitizeModelResponse in <EventFlow>
 Exit code 0 = no errors (warnings allowed unless --strict).
 """
 import json
@@ -37,6 +41,10 @@ import xml.etree.ElementTree as ET
 ERRORS, WARNINGS = [], []
 AUTH_TAGS = {"VerifyAPIKey", "OAuthV2", "VerifyJWT", "VerifyJWS", "VerifyIAM", "SAMLAssertion",
              "BasicAuthentication", "HMAC", "AccessControl"}
+EVENTFLOW_ALLOWED_TAGS = {
+    "DataCapture", "Javascript", "LLMTokenQuota", "MessageLogging",
+    "PublishMessage", "RaiseFault", "SanitizeModelResponse",
+}
 SECRET_PATTERNS = [
     (re.compile(r"AIza[0-9A-Za-z_\-]{35}"), "Google API key"),
     (re.compile(r"ya29\.[0-9A-Za-z_\-]{20,}"), "Google OAuth access token"),
@@ -208,6 +216,7 @@ def main():
     security_checks(root_dir, kind, policies, attached)
     best_practice_checks(root_dir, policies, endpoints)
     ai_checks(policies, all_conditions)
+    sse_checks(policies, endpoints)
     return report(strict, as_json)
 
 
@@ -384,6 +393,8 @@ def ai_checks(policies, conditions):
                 err(f"{tag} '{n}' missing <ModelArmor><TemplateName>")
             if el.find("Source") is not None:
                 err(f"{tag} '{n}' has <Source> - not a valid element (use UserPromptSource / LLMResponseSource)")
+            if tag == "SanitizeUserPrompt" and el.find("ContinuousScan") is not None:
+                err(f"SanitizeUserPrompt '{n}' has <ContinuousScan> - supported only on SanitizeModelResponse in <EventFlow>")
 
     valid_measures = {"DOT_PRODUCT_DISTANCE", "COSINE_DISTANCE", "SQUARED_L2_DISTANCE", "L1_DISTANCE"}
     for n, el in by_type.get("SemanticCacheLookup", []):
@@ -417,6 +428,85 @@ def ai_checks(policies, conditions):
         for ref in set(re.findall(r"parsepayload\.([A-Za-z0-9_-]+)\.", c)):
             if ref not in pp_names:
                 err(f"{label}: condition references parsepayload.{ref}.* but no ParsePayload policy '{ref}' exists")
+
+
+def sse_checks(policies, endpoints):
+    """Server-Sent Events (<EventFlow content-type='text/event-stream'>) rules from Apigee X docs."""
+    in_ef, outside_ef = set(), set()
+    targets_with_ef = set()
+    for label, ep in endpoints:
+        efs = ep.findall("EventFlow")
+        ef_ids = {id(s) for ef in efs for s in ef.iter("Step")}
+        for s in ep.iter("Step"):
+            if id(s) not in ef_ids:
+                n = text(s, "Name")
+                if n:
+                    outside_ef.add(n)
+        if not efs:
+            continue
+        if ep.tag == "TargetEndpoint":
+            targets_with_ef.add(ep.get("name"))
+            props = {p.get("name"): (p.text or "").strip().lower()
+                     for p in ep.findall("./HTTPTargetConnection/Properties/Property")}
+            if props.get("response.streaming.enabled") != "true":
+                warn(f"{label}: TargetEndpoint defines <EventFlow> without "
+                     f"<Property name=\"response.streaming.enabled\">true</Property>")
+        if len(efs) > 1:
+            err(f"{label}: defines {len(efs)} <EventFlow> stanzas - Apigee executes only the last one and ignores earlier ones")
+        for ef in efs:
+            ct = (ef.get("content-type") or "").strip()
+            if ct != "text/event-stream":
+                err(f"{label}: <EventFlow> must set content-type=\"text/event-stream\" (got {ct!r})")
+            req_el = ef.find("Request")
+            if req_el is not None and req_el.findall("Step"):
+                err(f"{label}: <EventFlow> only executes policies in <Response>, found Step(s) in <Request>")
+            resp_el = ef.find("Response")
+            ef_steps = resp_el.findall("Step") if resp_el is not None else []
+            if len(ef_steps) > 4:
+                err(f"{label}: <EventFlow> allows at most 4 policies in <Response>, found {len(ef_steps)}")
+            seen_ltq_or_dc = []
+            for st in ef_steps:
+                n = text(st, "Name")
+                if not n or n not in policies:
+                    continue
+                in_ef.add(n)
+                pel = policies[n]
+                if pel.tag not in EVENTFLOW_ALLOWED_TAGS:
+                    err(f"{label}: policy '{n}' (<{pel.tag}>) is not allowed in <EventFlow> "
+                        f"(allowed: {', '.join(sorted(EVENTFLOW_ALLOWED_TAGS))})")
+                if pel.tag in ("LLMTokenQuota", "DataCapture"):
+                    seen_ltq_or_dc.append(n)
+                elif pel.tag == "SanitizeModelResponse" and seen_ltq_or_dc:
+                    warn(f"{label}: SanitizeModelResponse '{n}' in <EventFlow> runs after {', '.join(seen_ltq_or_dc)} - "
+                         f"place SanitizeModelResponse before LLMTokenQuota/DataCapture so they only process checked events")
+                if pel.tag == "LLMTokenQuota":
+                    usage_src = text(pel, "LLMTokenUsageSource") or ""
+                    model_src = text(pel, "LLMModelSource") or ""
+                    if not usage_src or "response.content" in usage_src or "response.content" in model_src:
+                        err(f"{label}: LLMTokenQuota '{n}' in <EventFlow> reads response.content (empty during SSE) - "
+                            f"set <LLMTokenUsageSource> to read response.event.current.data")
+                    for src_label, src_val in (("LLMTokenUsageSource", usage_src), ("LLMModelSource", model_src)):
+                        if re.search(r"jsonPath\s*\([^)]*response\.event\.current\.data\s*,\s*true\s*\)", src_val):
+                            err(f"{label}: LLMTokenQuota '{n}' <{src_label}> uses jsonPath(..., response.event.current.data, true) - "
+                                f"pass false for want-array in <EventFlow> so a single value is returned")
+                if pel.tag == "SanitizeModelResponse":
+                    llm_src = text(pel, "LLMResponseSource") or text(pel, "ModelResponseSource") or ""
+                    if not llm_src or "response.content" in llm_src:
+                        err(f"{label}: SanitizeModelResponse '{n}' in <EventFlow> must set <LLMResponseSource> "
+                            f"reading response.event.current.data (response.content is empty during SSE)")
+
+    for label, ep in endpoints:
+        if ep.tag == "ProxyEndpoint" and ep.find("EventFlow") is not None:
+            routed_ef = [text(rr, "TargetEndpoint") for rr in ep.findall("RouteRule")
+                         if text(rr, "TargetEndpoint") in targets_with_ef]
+            if routed_ef:
+                warn(f"{label}: ProxyEndpoint and TargetEndpoint(s) {routed_ef} both define <EventFlow> - "
+                     f"Apigee executes only the TargetEndpoint EventFlow")
+
+    for n in sorted(outside_ef - in_ef):
+        if n in policies and "response.event.current." in ET.tostring(policies[n], encoding="unicode"):
+            err(f"policy '{n}' references response.event.current.* outside <EventFlow> "
+                f"(only populated inside <EventFlow>)")
 
 
 def report(strict=False, as_json=False):

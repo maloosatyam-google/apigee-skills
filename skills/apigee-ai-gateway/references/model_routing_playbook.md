@@ -92,6 +92,113 @@ RouteRules choose a target **before** the call and cannot retry on failure. For 
 - **Fallback model on 429/5xx:** in the TargetEndpoint `<FaultRules>` (or a response-flow condition on
   `response.status.code = 429`), call the fallback with a `ServiceCallout` to the other model URL and replace the
   response. Record it in `x-gateway-fallback: true`.
-- Unsupported features: refuse them explicitly. For example, if SSE is not implemented, return 501 for `:streamGenerateContent`
-  instead of silently returning a non-streamed body. For SSE, set `response.streaming.enabled=true` on the target and
-  count tokens in an `<EventFlow content-type="text/event-stream">`.
+- **Unsupported features:** refuse them explicitly. For example, if SSE is intentionally disabled (`--no-sse`), return
+  HTTP `501 Not Implemented` for `:streamGenerateContent` instead of silently returning a non-streamed body.
+
+## 5. Server-Sent Events (SSE) Streaming Across Gemini, Claude & OpenAI
+
+### 5.1 Separate Buffered and Streaming `TargetEndpoint`s
+Never mix SSE (`response.streaming.enabled=true`) and buffered calls in a single `TargetEndpoint` (doing so causes
+empty `response.content` variables on buffered calls). Detect streaming in the request PreFlow (`:streamGenerateContent`,
+`:streamRawPredict`, or JSON `body.stream === true` → `flow.is_streaming = "true"`) and dispatch with ordered `RouteRule`s:
+
+```xml
+<RouteRule name="claude-stream-target">
+  <Condition>(flow.target_provider == "anthropic") and (flow.is_streaming == "true")</Condition>
+  <TargetEndpoint>claude-vertex-stream-target</TargetEndpoint>
+</RouteRule>
+<RouteRule name="claude-target">
+  <Condition>flow.target_provider == "anthropic"</Condition>
+  <TargetEndpoint>claude-vertex-target</TargetEndpoint>
+</RouteRule>
+<RouteRule name="gemini-stream-target">
+  <Condition>flow.is_streaming == "true"</Condition>
+  <TargetEndpoint>gemini-vertex-stream-target</TargetEndpoint>
+</RouteRule>
+<RouteRule name="gemini-target">            <!-- default: last, no condition -->
+  <TargetEndpoint>gemini-vertex-target</TargetEndpoint>
+</RouteRule>
+```
+
+Extract `flow.model` for both buffered and streaming suffixes in `EV-RequestDetails`:
+```xml
+<ExtractVariables continueOnError="true" enabled="true" name="EV-RequestDetails">
+  <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+  <URIPath>
+    <Pattern ignoreCase="true">/models/{model}:streamGenerateContent</Pattern>
+    <Pattern ignoreCase="true">/models/{model}:generateContent</Pattern>
+    <Pattern ignoreCase="true">/models/{model}:streamRawPredict</Pattern>
+    <Pattern ignoreCase="true">/models/{model}:rawPredict</Pattern>
+  </URIPath>
+  <VariablePrefix>flow</VariablePrefix>
+</ExtractVariables>
+```
+
+### 5.2 Upstream Vertex AI Streaming URLs & Wire Formats
+| Provider on Vertex AI | Upstream Streaming URL & Payload Requirement | SSE Event Delta & Usage Shape |
+|---|---|---|
+| **Gemini** (`publishers/google`) | `.../models/{flow.model}:streamGenerateContent?alt=sse` (**`?alt=sse` required**; without it Vertex returns chunked JSON `application/json` instead of `text/event-stream`) | `$.candidates[-1].content.parts[-1].text`; final chunk has `finishReason` + `$.usageMetadata.totalTokenCount` |
+| **Anthropic Claude** (`publishers/anthropic`) | `.../models/{flow.model}:streamRawPredict` with `"anthropic_version": "vertex-2023-10-16"` **and `"stream": true`** in JSON body | `message_start` (`message.usage.input_tokens`), `content_block_delta` (`delta.text` / `delta.partial_json`), `message_delta` (`usage.output_tokens`) |
+| **OpenAI-compatible** (`endpoints/openapi`) | `https://aiplatform.googleapis.com/v1beta1/projects/{PROJECT}/locations/global/endpoints/openapi/chat/completions` with `"model": "google/{model}"` and `"stream": true` (plus `"stream_options": {"include_usage": true}` for token quota) | `$.choices[-1].delta.content`; final chunk before `[DONE]` carries `$.usage.total_tokens` |
+
+### 5.3 `<EventFlow content-type="text/event-stream">` Pattern
+Place `<EventFlow>` on each streaming `TargetEndpoint` (when both `ProxyEndpoint` and `TargetEndpoint` define an
+`EventFlow`, Apigee executes **only** the `TargetEndpoint`'s `EventFlow`):
+
+```xml
+<TargetEndpoint name="gemini-vertex-stream-target">
+  <PreFlow name="PreFlow">
+    <Request>
+      <Step><Name>AM-RouteGeminiStreamTarget</Name></Step>
+    </Request>
+    <Response/>
+  </PreFlow>
+  <EventFlow name="EventFlow" content-type="text/event-stream">
+    <Response>
+      <!-- 1. ContinuousScan Model Armor first so downstream steps & client only see checked events -->
+      <Step>
+        <Name>SMR-SanitizeModelResponseSSE</Name>
+        <Condition>response.event.current.data != null and response.event.current.data != ""</Condition>
+      </Step>
+      <!-- 2. Count total tokens ONCE on the final Gemini chunk (intermediate chunks repeat promptTokenCount) -->
+      <Step>
+        <Name>LTQ-TokenCountSSE</Name>
+        <Condition>response.event.current.data JavaRegex "(?s).*(\"finishReason\"|\"candidatesTokenCount\").*"</Condition>
+      </Step>
+      <!-- 3. Copy final usageMetadata into flow.*TokenCount for PostClientFlow MessageLogging -->
+      <Step>
+        <Name>JS-StreamMetrics</Name>
+        <Condition>response.event.current.data JavaRegex "(?s).*(\"finishReason\"|\"candidatesTokenCount\").*"</Condition>
+      </Step>
+    </Response>
+  </EventFlow>
+  <HTTPTargetConnection>
+    <Properties>
+      <Property name="response.streaming.enabled">true</Property>
+      <Property name="keepalive.timeout.millis">300000</Property>
+      <Property name="io.timeout.millis">300000</Property>
+    </Properties>
+    <URL>https://aiplatform.googleapis.com</URL>
+    <Authentication>
+      <GoogleAccessToken>
+        <Scopes><Scope>https://www.googleapis.com/auth/cloud-platform</Scope></Scopes>
+      </GoogleAccessToken>
+    </Authentication>
+  </HTTPTargetConnection>
+</TargetEndpoint>
+```
+
+### 5.4 Multi-Provider One-Contract SSE (`FormatClaudeStream.js` & `/models/auto:streamGenerateContent`)
+- `/models/auto:streamGenerateContent` runs the exact same fast classifier `ServiceCallout` (`AutoRoutingFlow` matches
+  `^/models/auto:.*`) before the target is chosen, then streams from `claude-vertex-stream-target` or `gemini-vertex-stream-target`.
+- On `claude-vertex-stream-target`, `JS-FormatClaudeStream` runs in `<EventFlow><Response>` (within the 4-policy limit:
+  `JS-FormatClaudeStream` → `SMR-SanitizeModelResponseSSE` → `LTQ-TokenCountSSE`):
+  - Rewrites `content_block_delta` (`text_delta`) into `data: {"candidates":[{"content":{"role":"model","parts":[{"text":"..."}]}}]}\n\n`
+    (updating both `response.event.current.data` and `response.event.current.content`).
+  - Accumulates `tool_use` + `input_json_delta` blocks and emits a Gemini `functionCall` chunk on `content_block_stop`.
+  - Suppresses non-content Anthropic control events (`ping`, `message_start`, `message_stop`) by setting
+    `response.event.current.content = ""` and `response.event.current.data = ""`.
+  - Emits the final `finishReason` + `usageMetadata` chunk on `message_delta` (`input_tokens + output_tokens`), so
+    `LTQ-TokenCountSSE` and `ML-CloudLogging` work identically across Gemini and Claude.
+- Guard all buffered `PostFlow` payload policies (`EV-ModelResponse`, `LTQ-TokenCount`, `SCP-Semantic-Cache-Populate`,
+  `SMR-SanitizeModelResponse`) and `SemanticCacheLookup` with `flow.is_streaming != "true"`.

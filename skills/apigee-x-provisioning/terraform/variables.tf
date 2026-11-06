@@ -246,6 +246,12 @@ variable "lb_name_prefix" {
   default     = "apigee"
 }
 
+variable "lb_backend_timeout_sec" {
+  description = "HTTPS Load Balancer backend timeout in seconds (default 300s to support long-running AI/LLM SSE streams; Cloud LB defaults to 30s if unset)."
+  type        = number
+  default     = 300
+}
+
 variable "cert_mode" {
   description = "TLS certificate mode for external routing: google_managed (default), existing (uses ssl_certificate), or self_managed (uses ssl_certificate_pem + ssl_private_key_pem)."
   type        = string

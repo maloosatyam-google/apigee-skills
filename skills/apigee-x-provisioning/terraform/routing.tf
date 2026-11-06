@@ -162,6 +162,7 @@ resource "google_compute_backend_service" "apigee" {
   name                  = "${var.lb_name_prefix}-backend"
   protocol              = "HTTPS"
   load_balancing_scheme = "EXTERNAL_MANAGED"
+  timeout_sec           = var.lb_backend_timeout_sec
   security_policy       = local.security_policy
 
   backend {
@@ -295,6 +296,7 @@ resource "google_compute_region_backend_service" "apigee" {
   region                = var.region
   protocol              = "HTTPS"
   load_balancing_scheme = "EXTERNAL_MANAGED"
+  timeout_sec           = var.lb_backend_timeout_sec
   security_policy       = var.cloud_armor_policy
 
   backend {

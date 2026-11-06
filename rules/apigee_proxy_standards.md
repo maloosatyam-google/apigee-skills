@@ -53,6 +53,7 @@ Every file in `policies/` is listed in the manifest `<Policies>` and attached by
   `SemanticCacheLookup`/`Populate` (not ResponseCache).
 - Model names for `/auto` come from product attributes `routing.model.*`, never literals in the proxy.
 - Normalise non-Gemini responses to `usageMetadata` so quota/cost/telemetry stay provider-agnostic.
+- **SSE streaming**: always use separate `-stream-target` `TargetEndpoint`s (`response.streaming.enabled=true`, 300s timeouts; never mix SSE and non-SSE in one `TargetEndpoint`). Force `?alt=sse` on Vertex Gemini `:streamGenerateContent` and `"stream": true` on Claude `:streamRawPredict`. In `<EventFlow content-type="text/event-stream">` (<= 4 policies in `<Response>`, only `DataCapture`/`Javascript`/`LLMTokenQuota`/`MessageLogging`/`PublishMessage`/`RaiseFault`/`SanitizeModelResponse`), read `response.event.current.data` (not `response.content`), put `SanitizeModelResponse` (`<ContinuousScan>true</ContinuousScan>`) before `LLMTokenQuota`/`DataCapture`, and guard buffered `PostFlow` payload policies + `SemanticCacheLookup` with `flow.is_streaming != "true"`.
 - Telemetry headers `x-gateway-*` (Apigee strips `x-apigee-*`).
 
 ## 6. MCP / Tools Gateway conventions

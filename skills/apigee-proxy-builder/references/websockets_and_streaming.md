@@ -154,49 +154,80 @@ OAuth/JWT tokens are validated only during the handshake. If a token expires dur
 | Max event size | N/A | 10 MB per event |
 | Use case | Chat, bidirectional | Server push, LLM streaming |
 
-### SSE Proxy Configuration
+### SSE Proxy & `<EventFlow>` Configuration
 
-SSE uses standard HTTP with continuous response streaming. The backend sends `Content-Type: text/event-stream` responses.
+SSE uses standard HTTP 200 with continuous response streaming (`Content-Type: text/event-stream`). Always use a **dedicated `TargetEndpoint`** for SSE targets—do **not** mix SSE and non-SSE calls in the same `TargetEndpoint` (causes empty `response.content` on buffered requests).
 
 ```xml
-<TargetEndpoint name="sse-backend">
+<TargetEndpoint name="gemini-vertex-stream-target">
+  <PreFlow name="PreFlow">
+    <Request>
+      <Step><Name>AM-RouteGeminiStreamTarget</Name></Step>
+    </Request>
+    <Response/>
+  </PreFlow>
+  <EventFlow name="EventFlow" content-type="text/event-stream">
+    <Response>
+      <Step>
+        <Name>SMR-SanitizeModelResponseSSE</Name>
+        <Condition>response.event.current.data != null and response.event.current.data != ""</Condition>
+      </Step>
+      <Step>
+        <Name>LTQ-TokenCountSSE</Name>
+        <Condition>response.event.current.data JavaRegex "(?s).*(\"finishReason\"|\"candidatesTokenCount\").*"</Condition>
+      </Step>
+    </Response>
+  </EventFlow>
   <HTTPTargetConnection>
-    <URL>https://sse-backend.example.com/events</URL>
     <Properties>
       <Property name="response.streaming.enabled">true</Property>
-      <Property name="keepalive.timeout.millis">3600000</Property>
-      <Property name="io.timeout.millis">3600000</Property>
+      <Property name="keepalive.timeout.millis">300000</Property>
+      <Property name="io.timeout.millis">300000</Property>
     </Properties>
+    <URL>https://aiplatform.googleapis.com</URL>
+    <Authentication>
+      <GoogleAccessToken>
+        <Scopes><Scope>https://www.googleapis.com/auth/cloud-platform</Scope></Scopes>
+      </GoogleAccessToken>
+    </Authentication>
   </HTTPTargetConnection>
 </TargetEndpoint>
 ```
 
-Key differences from WebSocket:
+### `<EventFlow>` Rules, Variables, and Policy Allowlist
 
-- No protocol upgrade occurs. SSE uses a standard HTTP response.
-- `response.streaming.enabled` should be `true` for SSE.
-- Policies can still execute on the initial request.
-- EventFlow (newer feature) enables processing of individual SSE events.
+1. **Attributes & Placement**:
+   - `<EventFlow name="EventFlow" content-type="text/event-stream">` (`content-type` **must** be `text/event-stream`).
+   - Can be placed inside `TargetEndpoint` or `ProxyEndpoint`, **but only one `EventFlow` executes**:
+     - If multiple `<EventFlow>` stanzas exist in one endpoint, only the **last** one runs.
+     - If both `ProxyEndpoint` and `TargetEndpoint` define `<EventFlow>`, **only the `TargetEndpoint`'s `EventFlow` executes** (`ProxyEndpoint`'s is ignored). Prefer placing `<EventFlow>` per streaming `TargetEndpoint` in multi-provider AI gateways.
+2. **Policy Limits & Strict Allowlist**:
+   - Policies execute **only in `<Response>`** of `<EventFlow>` (up to **4 policies maximum**).
+   - **Only 7 policy types are allowed in `<EventFlow>`** (enforced by `validate_bundle.py`):
+     `DataCapture`, `Javascript`, `LLMTokenQuota`, `MessageLogging`, `PublishMessage`, `RaiseFault`, `SanitizeModelResponse`.
+   - Place `SanitizeModelResponse` (`<ContinuousScan>true</ContinuousScan>`) **first** before `LLMTokenQuota` and `DataCapture` so downstream policies only process checked events.
+   - If `DataCapture` runs on multiple events, only the **latest** value captured before stream close is recorded in Analytics.
+3. **`<EventFlow>` Flow Variables** (scoped strictly to the current event inside `<EventFlow>`):
+   - `response.event.current.content`: Full raw SSE event string (including `event:` / `data:` fields). Setting `response.event.current.content` to `""` **suppresses** sending that event to the client.
+   - `response.event.current.data`: The `data:` payload string of the current event. Modify it in `JavaScript` to transform the payload sent to the client, and read it in `SanitizeModelResponse` (`jsonPath(..., response.event.current.data, true)`) and `LLMTokenQuota` (`jsonPath(..., response.event.current.data, false)` — `want-array` must be `false`).
+   - `response.event.current.count`: 1-based counter of events received in the stream (`1` on first event).
 
-**Billing note:** Proxies deployed with an EventFlow configuration are billed as **Extensible** proxies (higher tier). EventFlow policies execute on each SSE event, not just once per request.
+**Billing note:** Proxies deployed with an `EventFlow` configuration are billed as **Extensible** proxies.
 
-### SSE Limitations
+### SSE Limitations & Load Balancer Timeout Gotcha
 
-- Each response event is limited to 10 MB.
-- Do NOT mix SSE and non-SSE in the same TargetEndpoint (causes empty `response.content`).
-- The `response.content` flow variable is NOT populated during streaming (it is empty).
+- Each response event is limited to **10 MB**.
+- Do **NOT** mix SSE and non-SSE in the same `TargetEndpoint` (causes empty `response.content`).
+- `response.content` is **NOT** populated during streaming (it is empty). Guard buffered `PostFlow` payload policies (`ExtractVariables`, `JavaScript`, `SemanticCachePopulate`, buffered `LLMTokenQuota` / `SanitizeModelResponse`) with `flow.is_streaming != "true"` so they do not fail or trigger silent full-response buffering.
+- **Downstream Cloud Load Balancer 30-second default timeout:** Google Cloud HTTPS Load Balancers default `backend_service.timeout_sec` to **30 seconds**, which cuts off long LLM SSE streams mid-generation. Set `timeout_sec >= 300` on the LB backend service (`lb_backend_timeout_sec = 300` is the default in `apigee-x-provisioning`).
+- **HTTP status vs mid-stream faults:** HTTP `200 OK` headers are flushed when the stream starts. If a fault occurs inside `<EventFlow>` (e.g., `RaiseFault` or `SanitizeModelResponse` `FilterMatched`), Apigee emits the fault as an SSE `data: {"fault":...}` event and terminates the stream immediately.
 
 ### SSE Common Use Case: LLM Streaming Responses
 
-Many LLM APIs (Gemini, etc.) stream responses via SSE:
-
-```
-data: {"text": "Hello"}
-data: {"text": " world"}
-data: [DONE]
-```
-
-Configure the proxy with response streaming enabled and increased timeouts to handle long LLM generation times.
+LLM APIs stream token deltas via SSE (`curl -N`):
+- **Vertex AI Gemini**: `:streamGenerateContent?alt=sse` (`?alt=sse` is mandatory for `text/event-stream` framing).
+- **Vertex AI Anthropic Claude**: `:streamRawPredict` with `"stream": true` in the JSON request body.
+- **Vertex AI OpenAI Chat Completions**: `/v1beta1/projects/{p}/locations/global/endpoints/openapi/chat/completions` with `"stream": true`.
 
 ## HTTP Streaming (Non-WebSocket, Non-SSE)
 

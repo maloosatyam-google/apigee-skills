@@ -2,13 +2,14 @@
 name: apigee-ai-gateway
 description: >-
   Design, scaffold, update and operate an Apigee X AI Gateway (LLM proxy) in front of Vertex AI Gemini and
-  Anthropic Claude (and other LLM APIs). Use for model routing (direct, multi-provider with Gemini<->Claude
-  shape conversion, and /auto classifier routing driven by API product attributes), Model Armor guardrails
-  (SanitizeUserPrompt / SanitizeModelResponse), LLM token quotas (LLMTokenQuota enforce/count pair,
-  PromptTokenLimit), semantic caching (SemanticCacheLookup/Populate), cost and budget governance (KVM rate
-  card, Quota micro-dollar budgets, MonetizationLimitsCheck + DataCapture), per-user attribution, streaming,
-  failover and gateway telemetry headers. Standalone: includes a scaffold that generates a deployable bundle
-  and the matching llmOperationGroup API product.
+  Anthropic Claude (and other LLM APIs), supporting both buffered (:generateContent) and Server-Sent Events (SSE)
+  streaming (:streamGenerateContent / <EventFlow content-type="text/event-stream">). Use for model routing
+  (direct, multi-provider with Gemini<->Claude buffered + SSE shape conversion, and /auto classifier routing driven
+  by API product attributes), Model Armor guardrails (SanitizeUserPrompt / SanitizeModelResponse incl. SSE
+  ContinuousScan), LLM token quotas (LLMTokenQuota enforce + buffered/SSE count pair, PromptTokenLimit), semantic
+  caching (SemanticCacheLookup/Populate), cost and budget governance (KVM rate card, Quota micro-dollar budgets,
+  MonetizationLimitsCheck + DataCapture), per-user attribution, failover and gateway telemetry headers.
+  Standalone: includes a scaffold that generates a deployable bundle and the matching llmOperationGroup API product.
 ---
 
 # Apigee AI Gateway
@@ -20,9 +21,9 @@ Shares the validator/deploy scripts and the full policy XML reference with
 [`apigee-proxy-lifecycle`](../apigee-proxy-lifecycle/SKILL.md).
 
 ## When to use
-- "Put Apigee in front of Gemini / Claude", "add Model Armor", "token quota per user/app/model"
+- "Put Apigee in front of Gemini / Claude", "add SSE streaming for AI proxies", "add Model Armor", "token quota per user/app/model"
 - "semantic cache", "auto-route prompts to the cheapest suitable model", "budget / chargeback / prepaid wallet"
-- Reviewing or debugging an LLM proxy (quota never trips, cache never hits, cost is wrong, 404 with an empty model)
+- Reviewing or debugging an LLM proxy (SSE stream cut off at 30s, empty `response.content`, quota never trips, cache never hits, cost is wrong, 404 with an empty model)
 
 ## Prerequisites (check before deploying)
 - Vertex AI API enabled; runtime service account with `roles/aiplatform.user`
@@ -54,38 +55,48 @@ B='{"contents":[{"role":"user","parts":[{"text":"Write a Python function that re
 curl -si https://$HOST/ai/v1/models/gemini-3.6-flash:generateContent -H "x-apikey: $KEY" -H 'Content-Type: application/json' -d "$B" | grep -i x-gateway
 curl -si https://$HOST/ai/v1/models/claude-haiku-5-5:generateContent -H "x-apikey: $KEY" -H 'Content-Type: application/json' -d "$B" | grep -i x-gateway
 curl -si https://$HOST/ai/v1/models/auto:generateContent             -H "x-apikey: $KEY" -H 'Content-Type: application/json' -d "$B" | grep -i x-gateway-router
+
+# 4. Stream tokens over Server-Sent Events (SSE) across Gemini, Claude and /models/auto
+curl -N  https://$HOST/ai/v1/models/gemini-3.6-flash:streamGenerateContent?alt=sse -H "x-apikey: $KEY" -H 'Content-Type: application/json' -d "$B"
+curl -N  https://$HOST/ai/v1/models/claude-haiku-5-5:streamGenerateContent?alt=sse -H "x-apikey: $KEY" -H 'Content-Type: application/json' -d "$B"
+curl -N  https://$HOST/ai/v1/models/auto:streamGenerateContent?alt=sse             -H "x-apikey: $KEY" -H 'Content-Type: application/json' -d "$B"
 ```
 
-Demo ideas: jailbreak prompt → 403 from Model Armor. Loop calls → 429 from `LLMTokenQuota`. Same question twice
+Demo ideas: jailbreak prompt → 403 from Model Armor (or stream terminated mid-response by SSE `ContinuousScan`). Loop calls → 429 from `LLMTokenQuota`. Same question twice
 with `x-use-cache: true` → `x-gateway-cache-status: HIT` (skips the model, no tokens charged). A coding prompt to
-`/models/auto` → `x-gateway-router-category: coding` and the product's coding model.
+`/models/auto` (buffered or `:streamGenerateContent`) → `x-gateway-router-category: coding` and the product's coding model.
 
 ### Scaffold options
 | Flag | Adds |
 |---|---|
-| `--token-quota` | `LTQ-TokenEnforce` (conditional flow, cache-miss only) + `LTQ-TokenCount` (PostFlow), limits from product `llmTokenQuota` |
+| *(default)* `--sse` / `--no-sse` | SSE streaming enabled by default: dedicated `*-stream-target` TargetEndpoints (`response.streaming.enabled=true`, 300s timeouts) + `<EventFlow content-type="text/event-stream">`. Pass `--no-sse` to refuse streaming explicitly with HTTP 501 |
+| `--token-quota` | `LTQ-TokenEnforce` (conditional flow, cache-miss only) + `LTQ-TokenCount` (buffered PostFlow) + `LTQ-TokenCountSSE` (`EventFlow`), limits from product `llmTokenQuota` |
 | `--prompt-token-limit 5000pm` | `PromptTokenLimit` surge protection per app |
-| `--armor-region R` | `SanitizeUserPrompt` (blocks) + `SanitizeModelResponse` |
-| `--cache-region R ...` | Opt-in semantic cache (`x-use-cache: true`) with HIT/MISS tracking |
-| `--claude [--claude-model M]` | `claude-vertex-target`, `ClaudeRequestPrep.js` (Gemini → Anthropic Messages incl. tools, system, generationConfig) and `FormatClaudeResponse.js` (→ Gemini candidates + `usageMetadata`, so quota/cost/armor work unchanged) |
-| `--auto-route [--router-model M]` | `/models/auto:generateContent`: classifier ServiceCallout (structured output) → `AutoRouting.js` reads `routing.model.<category>` from the caller's product |
+| `--armor-region R` | `SanitizeUserPrompt` (blocks) + `SanitizeModelResponse` (buffered PostFlow) + `SMR-SanitizeModelResponseSSE` (`<ContinuousScan>true</ContinuousScan>` in `EventFlow`) |
+| `--cache-region R ...` | Opt-in semantic cache (`x-use-cache: true`, bypassed automatically on SSE requests) with HIT/MISS tracking |
+| `--claude [--claude-model M]` | `claude-vertex-target` + `claude-vertex-stream-target`, `ClaudeRequestPrep.js` (Gemini → Anthropic Messages incl. `stream: true`, tools, system, generationConfig), `FormatClaudeResponse.js` (buffered) and `FormatClaudeStream.js` (real-time Anthropic SSE → Gemini SSE chunks in `EventFlow`) |
+| `--auto-route [--router-model M]` | `/models/auto:{generateContent\|streamGenerateContent}`: classifier ServiceCallout (structured output) → `AutoRouting.js` reads `routing.model.<category>` from the caller's product |
 
 ## Architecture (request lifecycle)
 
 ```text
 Client ── x-apikey (+ optional user JWT) ──▶ ProxyEndpoint /ai/v1
- PreFlow   identity (EV bearer → DecodeJWT → flow.emailId) → JS extract prompt/model → VerifyAPIKey
-           → cheap refusals (unsupported path / streaming) → SanitizeUserPrompt → PromptTokenLimit
+ PreFlow   identity (EV bearer → DecodeJWT → flow.emailId) → JS extract prompt/model/is_streaming → VerifyAPIKey
+           → cheap refusals (unsupported path / --no-sse 501) → SanitizeUserPrompt → PromptTokenLimit
            → MonetizationLimitsCheck → budget Quota (EnforceOnly) + RaiseFault → strip auth
-           → [opt-in] SemanticCacheLookup ─── HIT ──▶ response (skips target + conditional flows)
+           → [opt-in, non-streaming only] SemanticCacheLookup ─── HIT ──▶ response (skips target + conditional flows)
  Flows     (miss only, FIRST match wins) AutoRoutingFlow: LTQ enforce → classifier → JS route
            | LLMTokenQuotaFlow: LTQ enforce
- Target    AM sets target.url (Gemini :generateContent | Claude :rawPredict), target.copy.pathsuffix=false,
-           GoogleAccessToken auth; Claude target converts request/response shapes
- PostFlow  EV usage → KVM rate card → JS cost → budget Quota (Weight) → LLMTokenQuota CountOnly
-           → DataCapture (analytics + monetization) → SemanticCachePopulate → SanitizeModelResponse
-           → x-gateway-* headers
- PostClientFlow MessageLogging · DefaultFaultRule(AlwaysEnforce) DataCapture for blocked calls
+ Target    RouteRules dispatch to SEPARATE buffered vs SSE streaming TargetEndpoints:
+   ├─ Buffered (gemini-vertex-target | claude-vertex-target):
+   │    AM sets target.url (:generateContent | :rawPredict), Claude converts req/resp shapes
+   │    PostFlow: EV usage → LTQ CountOnly → SemanticCachePopulate → SanitizeModelResponse → x-gateway-* headers
+   └─ SSE Stream (gemini-vertex-stream-target | claude-vertex-stream-target, response.streaming.enabled=true):
+        AM sets target.url (:streamGenerateContent?alt=sse | :streamRawPredict + stream:true)
+        EventFlow (content-type="text/event-stream", <= 4 policies):
+          [Claude: JS-FormatClaudeStream] → SMR-SanitizeModelResponseSSE (ContinuousScan)
+          → LTQ-TokenCountSSE (final usage event) → JS-StreamMetrics (populates flow.*TokenCount)
+ PostClientFlow MessageLogging (logs tokens for both buffered and SSE) · DefaultFaultRule DataCapture
 ```
 
 The scaffold implements the core of this lifecycle. Identity/DecodeJWT, cost, budget and monetization are added
@@ -155,11 +166,35 @@ which only runs on a miss. The cache key is the prompt only, so do not classify 
 - `MessageLogging` in PostClientFlow. `DataCapture` dimensions `dc_user_email`, `dc_model_name`, `dc_*_token_count`,
   `dc_cache_status`, plus a fault-path twin in `DefaultFaultRule` with `AlwaysEnforce`.
 
-## 7. Updating a deployed AI gateway
+## 7. Server-Sent Events (SSE) streaming for AI proxies
+- **Always separate SSE and non-SSE `TargetEndpoint`s.** Mixing streaming (`response.streaming.enabled=true`) and
+  buffered requests in one `TargetEndpoint` causes inconsistent buffering and empty `response.content` variables.
+  Route via `flow.is_streaming == "true"` (detected from `:streamGenerateContent`, `:streamRawPredict`, or `"stream": true`).
+- **Force `?alt=sse` on Vertex Gemini streaming (`:streamGenerateContent?alt=sse`).** Without `?alt=sse`, Vertex AI
+  streams a chunked JSON array (`application/json`) instead of `text/event-stream`, so `<EventFlow>` never triggers.
+- **Claude on Vertex streaming** calls `:streamRawPredict` and **requires `"stream": true`** in the Anthropic Messages
+  request JSON. `FormatClaudeStream.js` converts Anthropic SSE events (`message_start`, `content_block_delta`, `tool_use`,
+  `message_delta`) into Gemini SSE chunks on the fly so callers keep one streaming contract even under `/models/auto`.
+- **`<EventFlow name="EventFlow" content-type="text/event-stream">` constraints (enforced by `validate_bundle.py`):**
+  - Only **4 policies max** in `<Response>` (no `<Request>` steps).
+  - Only **7 policy types allowed**: `DataCapture`, `Javascript`, `LLMTokenQuota`, `MessageLogging`, `PublishMessage`,
+    `RaiseFault`, `SanitizeModelResponse`.
+  - Read the current event payload from `response.event.current.data` (or full raw frame `response.event.current.content`;
+    setting `response.event.current.content = ""` drops an event). `response.content` is **empty** during streaming.
+  - Place `SanitizeModelResponse` (`<ContinuousScan>true</ContinuousScan>`) **before** `LLMTokenQuota` and `DataCapture`
+    so downstream steps only see checked events, and guard `LTQ-TokenCountSSE` (`jsonPath(..., response.event.current.data, false)`)
+    on the final usage event (`finishReason` / `candidatesTokenCount`) so intermediate Gemini `promptTokenCount` chunks are not double-counted.
+  - Guard buffered `PostFlow` payload policies (`EV-ModelResponse`, `LTQ-TokenCount`, `SCP-Semantic-Cache-Populate`,
+    `SMR-SanitizeModelResponse`) and `SemanticCacheLookup` with `flow.is_streaming != "true"`.
+  - Increase `keepalive.timeout.millis` and `io.timeout.millis` (`300000` ms) on streaming targets **and** ensure your
+    northbound Cloud Load Balancer backend service `timeout_sec` is `>= 300` (Google Cloud LB defaults to 30s; our
+    `apigee-x-provisioning` Terraform module sets `lb_backend_timeout_sec = 300` by default).
+
+## 8. Updating a deployed AI gateway
 ```bash
 C=$SK/apigee-proxy-lifecycle/scripts/apigee_ctl.py
 python3 $C export ai-gateway-v1 --env $ENV --out ./ai-gw          # what is actually running
-# edit ./ai-gw (or bundle_edit.py), then:
+# edit ./ai-gw (bundle_edit.py supports --flow EventFlow --phase Response), then:
 python3 $C diff ./ai-gw --env $ENV && python3 $C update ./ai-gw --env $ENV --sa $RUNTIME_SA
 ```
 Model or quota changes usually belong in the **API product** (`llmOperationGroup`, `routing.model.*`), not the proxy:
@@ -168,6 +203,11 @@ Model or quota changes usually belong in the **API product** (`llmOperationGroup
 ## Troubleshooting
 | Symptom | Likely cause |
 |---|---|
+| SSE stream drops after ~30 seconds | Northbound Cloud Load Balancer `backend_service.timeout_sec` left at the 30s default, or target `io.timeout.millis` / `keepalive.timeout.millis` too low (set to 300s) |
+| SSE responses arrive all at once (not streaming) | Missing `response.streaming.enabled=true` on the streaming target, or an unguarded `ExtractVariables` / `JavaScript` policy in `PostFlow` accessed `response.content` and forced full-body buffering |
+| `<EventFlow>` policies never execute on Gemini stream | Upstream URL called `:streamGenerateContent` without `?alt=sse` (returns `application/json` instead of `text/event-stream`), or `<EventFlow>` placed in `ProxyEndpoint` when the `TargetEndpoint` also defines an `<EventFlow>` |
+| SSE token quota overcounts by N× prompt tokens | `LTQ-TokenCountSSE` read `$.usageMetadata.totalTokenCount` on every Gemini chunk without guarding on `finishReason`/`candidatesTokenCount`, or used `want-array=true` on `response.event.current.data` |
+| Empty `response.content` on `:generateContent` | Buffered and SSE calls share the same `TargetEndpoint`. Split into separate buffered and `-stream-target` TargetEndpoints |
 | Token quota never trips | LTQ pair mismatch, `flow.model` overwritten, or CountOnly fault swallowed (`continueOnError`). Check `ratelimit.LTQ-TokenCount.failed` in trace |
 | `InvalidAPICallAsNoApiProductMatchFound` | Model string not in the product's `llmOperations` (for example `@` and `-` revision separators differ) |
 | 404 from Vertex with an empty model in the URL | Routing skipped. Do not guard routing flows on `flow.cached` |
