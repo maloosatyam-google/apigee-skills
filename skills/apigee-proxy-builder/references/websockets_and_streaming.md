@@ -169,12 +169,19 @@ SSE uses standard HTTP 200 with continuous response streaming (`Content-Type: te
   <EventFlow name="EventFlow" content-type="text/event-stream">
     <Response>
       <Step>
+        <Name>JS-StreamMetrics</Name>
+      </Step>
+      <Step>
         <Name>SMR-SanitizeModelResponseSSE</Name>
-        <Condition>response.event.current.data != null and response.event.current.data != ""</Condition>
+        <Condition>response.event.current.data != null and response.event.current.data != "" and response.event.current.data != "[DONE]"</Condition>
       </Step>
       <Step>
         <Name>LTQ-TokenCountSSE</Name>
-        <Condition>response.event.current.data JavaRegex "(?s).*(\"finishReason\"|\"candidatesTokenCount\").*"</Condition>
+        <Condition>flow.stream_done = "true"</Condition>
+      </Step>
+      <Step>
+        <Name>DC-ModelAnalytics</Name>
+        <Condition>flow.stream_done = "true"</Condition>
       </Step>
     </Response>
   </EventFlow>

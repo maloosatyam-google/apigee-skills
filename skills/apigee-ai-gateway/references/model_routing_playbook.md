@@ -155,20 +155,25 @@ Place `<EventFlow>` on each streaming `TargetEndpoint` (when both `ProxyEndpoint
   </PreFlow>
   <EventFlow name="EventFlow" content-type="text/event-stream">
     <Response>
-      <!-- 1. ContinuousScan Model Armor first so downstream steps & client only see checked events -->
-      <Step>
-        <Name>SMR-SanitizeModelResponseSSE</Name>
-        <Condition>response.event.current.data != null and response.event.current.data != ""</Condition>
-      </Step>
-      <!-- 2. Count total tokens ONCE on the final Gemini chunk (intermediate chunks repeat promptTokenCount) -->
-      <Step>
-        <Name>LTQ-TokenCountSSE</Name>
-        <Condition>response.event.current.data JavaRegex "(?s).*(\"finishReason\"|\"candidatesTokenCount\").*"</Condition>
-      </Step>
-      <!-- 3. Copy final usageMetadata into flow.*TokenCount for PostClientFlow MessageLogging -->
+      <!-- 1. Run JS on every chunk: resets flow.stream_done="false" on line 1, extracts chunk text + usage,
+              and sets flow.stream_done="true" ONLY when candidates[0].finishReason is present -->
       <Step>
         <Name>JS-StreamMetrics</Name>
-        <Condition>response.event.current.data JavaRegex "(?s).*(\"finishReason\"|\"candidatesTokenCount\").*"</Condition>
+      </Step>
+      <!-- 2. ContinuousScan Model Armor BEFORE LLMTokenQuota/DataCapture so downstream steps only see checked events -->
+      <Step>
+        <Name>SMR-SanitizeModelResponseSSE</Name>
+        <Condition>response.event.current.data != null and response.event.current.data != "" and response.event.current.data != "[DONE]"</Condition>
+      </Step>
+      <!-- 3. Count total tokens ONCE on flow.stream_done="true" (never put escaped quotes \" inside JavaRegex) -->
+      <Step>
+        <Name>LTQ-TokenCountSSE</Name>
+        <Condition>flow.stream_done = "true"</Condition>
+      </Step>
+      <!-- 4. Optional DataCapture once on flow.stream_done="true" (within the 4-policy EventFlow limit) -->
+      <Step>
+        <Name>DC-ModelAnalytics</Name>
+        <Condition>flow.stream_done = "true"</Condition>
       </Step>
     </Response>
   </EventFlow>
@@ -188,6 +193,11 @@ Place `<EventFlow>` on each streaming `TargetEndpoint` (when both `ProxyEndpoint
 </TargetEndpoint>
 ```
 
+> **Critical Apigee X `<EventFlow>` & Condition Gotchas**:
+> 1. **Never use backslash-escaped quotes (`\"`) inside `<Condition>` `JavaRegex` literals** — Apigee X fails deployment with `expressions.parser.RegexRequired`. Parse JSON inside `JS-StreamMetrics` and check `flow.stream_done = "true"`.
+> 2. **Always reset `context.setVariable("flow.stream_done", "false");` on line 1 of your `<EventFlow>` JS** — otherwise trailing SSE frames (`data: [DONE]` on OpenAI, `message_stop` on Claude) inherit `flow.stream_done = "true"` from the preceding usage frame and fire `LTQ-TokenCountSSE` and `DC-ModelAnalytics` **twice**.
+> 3. **Intermediate Gemini SSE chunks can carry `candidatesTokenCount`** — only `candidates[0].finishReason` marks the single final Gemini chunk.
+
 ### 5.4 Multi-Provider One-Contract SSE (`FormatClaudeStream.js` & `/models/auto:streamGenerateContent`)
 - `/models/auto:streamGenerateContent` runs the exact same fast classifier `ServiceCallout` (`AutoRoutingFlow` matches
   `^/models/auto:.*`) before the target is chosen, then streams from `claude-vertex-stream-target` or `gemini-vertex-stream-target`.
@@ -200,5 +210,7 @@ Place `<EventFlow>` on each streaming `TargetEndpoint` (when both `ProxyEndpoint
     `response.event.current.content = ""` and `response.event.current.data = ""`.
   - Emits the final `finishReason` + `usageMetadata` chunk on `message_delta` (`input_tokens + output_tokens`), so
     `LTQ-TokenCountSSE` and `ML-CloudLogging` work identically across Gemini and Claude.
-- Guard all buffered `PostFlow` payload policies (`EV-ModelResponse`, `LTQ-TokenCount`, `SCP-Semantic-Cache-Populate`,
+- Guard all buffered `PostFlow` payload policies (`EV-ModelResponse`, `LTQ-TokenCount`, `DC-ModelAnalytics`, `SCP-Semantic-Cache-Populate`,
   `SMR-SanitizeModelResponse`) and `SemanticCacheLookup` with `flow.is_streaming != "true"`.
+
+See also: [ide_and_coding_agent_gateways.md](ide_and_coding_agent_gateways.md) for IDE & Copilot gateway routing (Antigravity `/v1internal`, Claude Code `/v1/messages` + `anthropic-beta` filtering, GitHub Copilot & Azure OpenAI `/v1/chat/completions` + `GET /v1/models`).

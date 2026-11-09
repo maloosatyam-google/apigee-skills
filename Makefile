@@ -17,7 +17,7 @@ examples:
 	python3 skills/apigee-api-proxy/scripts/scaffold_shared_flow.py --out build/sf-security --name sf-security \
 	  --features apikey,spikearrest,threat,strip-auth
 	python3 skills/apigee-ai-gateway/scripts/scaffold_ai_gateway.py --out build/ai-gateway-v1 --project my-project \
-	  --token-quota --prompt-token-limit 5000pm --claude --auto-route
+	  --token-quota --prompt-token-limit 5000pm --claude --openai --analytics --auto-route
 	python3 skills/apigee-mcp-gateway/scripts/scaffold_mcp_proxy.py --out build/orders-mcp --name orders-mcp \
 	  --basepath /orders/mcp --target https://orders-mcp-xyz.a.run.app/mcp --tools searchOrders,getOrder,issueRefund \
 	  --persona "Support:searchOrders,getOrder,issueRefund" --persona "Insights:searchOrders" \

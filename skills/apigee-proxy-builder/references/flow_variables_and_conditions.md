@@ -348,6 +348,7 @@ if (segments.length > 1) context.setVariable("custom.resource_type", segments[1]
 **Common confusion: `~` vs `~~` vs `~/`**
 - `~` (`Matches`/`Like`): glob-style matching using `*` as wildcard. NOT regex. The `*` matches zero or more of ANY characters including `/` path separators. Example: `proxy.pathsuffix ~ "/cat*"` matches `/cat`, `/cat123`, and `/cat/bird/mouse`. Use `MatchesPath` instead if you need path-segment-aware matching.
 - `~~` (`JavaRegex`): full Java regex. Example: `request.path ~~ "/api/v[0-9]+/users"` where `[0-9]+` is a regex character class.
+- **Deploy-time parser failure (`expressions.parser.RegexRequired`) — NEVER put backslash-escaped double quotes `\"` inside `<Condition>` strings/regexes**: Apigee X's condition expression parser does **not** support `\"` escaping inside `"..."` string or `JavaRegex` literals (for example, `JavaRegex "(?s).*(\"finishReason\").*"` fails deployment on the runtime instance with `expressions.parser.RegexRequired: Expected a pattern as the RHS of a pattern match expression`). Either match without quotes or parse JSON in JavaScript / `ExtractVariables` and test a flow variable (`flow.stream_done = "true"`).
 - `~/` (`MatchesPath`/`LikePath`): path-segment-aware matching. `*` matches one segment, `**` matches one or more segments. Example: `proxy.pathsuffix MatchesPath "/users/*/orders/**"`.
 - Escape `*` in `Matches` with `%`: `proxy.pathsuffix ~ "/c%*at"` matches literal `c*at`.
 

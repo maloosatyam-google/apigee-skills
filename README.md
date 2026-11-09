@@ -8,7 +8,7 @@ use cases:
 | **Provision Apigee X** (Terraform) | [`apigee-x-provisioning`](skills/apigee-x-provisioning/SKILL.md) | Full-fledged paid org Terraform module + `provision.py` (`wizard`, `plan`, `apply`, `export`): defaults to **PAYG + `INTERMEDIATE` env with Analytics + PSC + Google-managed keys & cert + no Data Residency + `nip.io`**; also supports `SUBSCRIPTION`, `VPC_PEERING`, CMEK, Data Residency, custom domains + Cloud DNS, multi-region HA, Cloud Armor, Static NAT IPs & Southbound PSC |
 | Any proxy task (start here) | [`apigee-proxy-builder`](skills/apigee-proxy-builder/SKILL.md) | 24 policy/flow references (incl. official best-practices and security-architecture checklists), `validate_bundle.py`, `deploy_bundle.sh` |
 | **API** Management (REST) | [`apigee-api-proxy`](skills/apigee-api-proxy/SKILL.md) | `scaffold_api_proxy.py` (API key / OAuth / JWT, OAS validation, quota, cache, CORS, JSON/XML threat protection, backend mTLS), `scaffold_shared_flow.py` |
-| **AI** Gateway (LLM) | [`apigee-ai-gateway`](skills/apigee-ai-gateway/SKILL.md) | `scaffold_ai_gateway.py` (Gemini + Claude, **SSE streaming `<EventFlow>`**, `/auto` routing, Model Armor incl. `ContinuousScan`, token quota, semantic cache) |
+| **AI** Gateway (LLM & IDE) | [`apigee-ai-gateway`](skills/apigee-ai-gateway/SKILL.md) | `scaffold_ai_gateway.py` (Gemini + Claude + OpenAI, **IDE & Copilot gateways**, **SSE streaming `<EventFlow>`**, `/auto` routing, Model Armor incl. `ContinuousScan`, token quota, 8-collector analytics, semantic cache) |
 | **MCP** Tools Gateway | [`apigee-mcp-gateway`](skills/apigee-mcp-gateway/SKILL.md) | `scaffold_mcp_proxy.py` (per-tool products, argument limits, keyless handshake) |
 | Update existing proxies | [`apigee-proxy-lifecycle`](skills/apigee-proxy-lifecycle/SKILL.md) | `apigee_ctl.py` (export, diff, update, rollback, products, developers, apps & keys, KVMs, target servers, flow hooks, trace masks, trace), `bundle_edit.py` |
 
@@ -232,7 +232,7 @@ scripts/
 skills/
   apigee-proxy-builder/      core: SKILL.md, references/ (24 docs), scripts/validate_bundle.py, deploy_bundle.sh
   apigee-api-proxy/          scaffold_api_proxy.py, scaffold_shared_flow.py, references/api_proxy_patterns.md
-  apigee-ai-gateway/         scaffold_ai_gateway.py, references/model_routing_playbook.md
+  apigee-ai-gateway/         scaffold_ai_gateway.py, references/{model_routing_playbook.md,ide_and_coding_agent_gateways.md}
   apigee-mcp-gateway/        scaffold_mcp_proxy.py, references/mcp_rest_bridge.md
   apigee-proxy-lifecycle/    apigee_ctl.py, bundle_edit.py, references/update_playbook.md
   apigee-x-provisioning/     terraform/ (full-fledged paid module + 11 mocked-provider tests), scripts/provision.py, references/
@@ -258,7 +258,7 @@ python3 scripts/sync_release_notes.py --check
 ## Development
 
 ```bash
-make test       # 38 offline tests (Terraform module tests run when terraform is installed): scaffolds, SSE EventFlow & validator bug detection, bundle edits, lifecycle vs mock API, JS converters, multi-agent installer, release-notes sync
+make test       # 40 offline tests (Terraform module tests run when terraform is installed): scaffolds, IDE/SSE EventFlow & validator bug detection, bundle edits, lifecycle vs mock API, JS converters, multi-agent installer, release-notes sync
 make examples   # generate + strictly validate one bundle of each kind into ./build
 make lint
 ```

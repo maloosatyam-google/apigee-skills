@@ -102,9 +102,18 @@ def make_handler(st):
                     return self._send(200, {})
             nf = lambda: self._send(404, {"error": {"message": "nf"}})  # noqa: E731
             # products
+            def bad_prod(d):
+                for cfg in (d.get("llmOperationGroup") or {}).get("operationConfigs") or []:
+                    ops = cfg.get("llmOperations") or []
+                    if len(ops) != 1:
+                        return f"Operations must contain exactly one entity but found {len(ops)} entities"
+                return None
+
             if path == "/apiproducts":
                 if method == "POST":
                     d = json.loads(body)
+                    if bad_prod(d):
+                        return self._send(400, {"error": {"code": 400, "message": bad_prod(d)}})
                     st.products[d["name"]] = d
                     return self._send(201, d)
                 return self._send(200, {"apiProduct": list(st.products.values())})
@@ -116,7 +125,10 @@ def make_handler(st):
                 if method == "GET":
                     return self._send(200, st.products[n])
                 if method == "PUT":
-                    st.products[n] = json.loads(body)
+                    d = json.loads(body)
+                    if bad_prod(d):
+                        return self._send(400, {"error": {"code": 400, "message": bad_prod(d)}})
+                    st.products[n] = d
                     return self._send(200, st.products[n])
                 if method == "DELETE":
                     return self._send(200, st.products.pop(n))

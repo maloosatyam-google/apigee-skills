@@ -348,8 +348,25 @@ def load_json(path, env=None):
     return json.loads(txt)
 
 
+def validate_product(p):
+    llm_cfgs = (p.get("llmOperationGroup") or {}).get("operationConfigs") or []
+    for idx, cfg in enumerate(llm_cfgs):
+        ops = cfg.get("llmOperations") or []
+        if len(ops) != 1:
+            sys.exit(f"invalid API product '{p.get('name', '?')}': llmOperationGroup.operationConfigs[{idx}] "
+                     f"has {len(ops)} llmOperations; Apigee X requires exactly 1 entity per operationConfig")
+    og_cfgs = (p.get("operationGroup") or {}).get("operationConfigs") or []
+    if og_cfgs and llm_cfgs:
+        og_src = {c.get("apiSource") for c in og_cfgs if c.get("apiSource")}
+        llm_src = {c.get("apiSource") for c in llm_cfgs if c.get("apiSource")}
+        if og_src != llm_src:
+            sys.exit(f"invalid API product '{p.get('name', '?')}': operationGroup apiSources {sorted(og_src)} "
+                     f"do not match llmOperationGroup apiSources {sorted(llm_src)}")
+
+
 def cmd_product_apply(api, o):
     p = load_json(o.file, o.env)
+    validate_product(p)
     exists = api.req("GET", f"/apiproducts/{urllib.parse.quote(p['name'])}", ok404=True)
     if exists:
         api.req("PUT", f"/apiproducts/{urllib.parse.quote(p['name'])}", body=p)

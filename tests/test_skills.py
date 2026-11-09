@@ -136,26 +136,42 @@ class Scaffolds(Base):
         out = self.p("ai")
         py(AI, "--out", out, "--project", "p", "--token-quota", "--prompt-token-limit", "5000pm",
            "--armor-region", "us-central1", "--cache-region", "us-central1", "--index-endpoint-host", "h",
-           "--index-endpoint-id", "e", "--index-id", "i", "--claude", "--auto-route")
+           "--index-endpoint-id", "e", "--index-id", "i", "--claude", "--openai", "--analytics", "--auto-route")
         self.validate(out)
         xml = open(os.path.join(out, "apiproxy/proxies/default.xml")).read()
+        self.assertLess(xml.index('name="HealthProbe"'), xml.index('name="AutoRoutingFlow"'))
+        self.assertLess(xml.index('name="ListModels"'), xml.index('name="AutoRoutingFlow"'))
         self.assertLess(xml.index('name="AutoRoutingFlow"'), xml.index('name="LLMTokenQuotaFlow"'))
         prod = json.load(open(os.path.join(out, "api_product.json")))
         models = [c["llmOperations"][0]["model"] for c in prod["llmOperationGroup"]["operationConfigs"]]
         self.assertIn("auto", models)
+        self.assertTrue(all(len(c["llmOperations"]) == 1 for c in prod["llmOperationGroup"]["operationConfigs"]))
+        self.assertEqual(prod["operationGroup"]["operationConfigs"][0]["apiSource"], "ai-gateway-v1")
+        self.assertIn("GET", prod["operationGroup"]["operationConfigs"][0]["operations"][0]["methods"])
         self.assertTrue(any(a["name"] == "routing.model.coding" for a in prod["attributes"]))
         # Verify SSE targets, RouteRule ordering, EventFlow policies and streaming guards
+        self.assertLess(xml.index('name="loopback"'), xml.index('name="openai-stream-target"'))
+        self.assertLess(xml.index('name="openai-stream-target"'), xml.index('name="openai-target"'))
+        self.assertLess(xml.index('name="openai-target"'), xml.index('name="claude-stream-target"'))
         self.assertLess(xml.index('name="claude-stream-target"'), xml.index('name="claude-target"'))
         self.assertLess(xml.index('name="claude-target"'), xml.index('name="gemini-stream-target"'))
         self.assertLess(xml.index('name="gemini-stream-target"'), xml.index('name="gemini-target"'))
         self.assertIn('flow.is_streaming != "true"', xml)
+        self.assertIn("DC-FaultAnalytics", xml)
+        ev_key = open(os.path.join(out, "apiproxy/policies/EV-ExtractAPIKey.xml")).read()
+        self.assertLess(ev_key.index('name="Authorization"'), ev_key.index('name="x-apikey"'))
         gem_st = open(os.path.join(out, "apiproxy/targets/gemini-vertex-stream-target.xml")).read()
         self.assertIn('<EventFlow name="EventFlow" content-type="text/event-stream">', gem_st)
         self.assertIn('<Property name="response.streaming.enabled">true</Property>', gem_st)
+        self.assertLess(gem_st.index("JS-StreamMetrics"), gem_st.index("SMR-SanitizeModelResponseSSE"))
         self.assertLess(gem_st.index("SMR-SanitizeModelResponseSSE"), gem_st.index("LTQ-TokenCountSSE"))
+        self.assertLess(gem_st.index("LTQ-TokenCountSSE"), gem_st.index("DC-ModelAnalytics"))
         claude_st = open(os.path.join(out, "apiproxy/targets/claude-vertex-stream-target.xml")).read()
         self.assertIn("JS-FormatClaudeStream", claude_st)
         self.assertLess(claude_st.index("SMR-SanitizeModelResponseSSE"), claude_st.index("LTQ-TokenCountSSE"))
+        oai_st = open(os.path.join(out, "apiproxy/targets/openai-vertex-stream-target.xml")).read()
+        self.assertIn("JS-NormalizeOpenAIRequest", oai_st)
+        self.assertIn("DC-ModelAnalytics", oai_st)
 
     def test_ai_gateway_minimal(self):
         py(AI, "--out", self.p("ai"), "--project", "p")
@@ -225,16 +241,35 @@ assert.strictEqual(JSON.parse(ctx["response.event.current.data"]).candidates[0].
 ctx=run(J+'/FormatClaudeStream.js',Object.assign(ctx,{"response.event.current.data":JSON.stringify({type:"message_delta",delta:{stop_reason:"end_turn"},usage:{output_tokens:8}})}));
 let fin=JSON.parse(ctx["response.event.current.data"]);
 assert.strictEqual(fin.candidates[0].finishReason,"STOP"); assert.strictEqual(fin.usageMetadata.totalTokenCount,20); assert.strictEqual(ctx["flow.totalTokenCount"],"20");
-// Native Anthropic SSE pass-through mode preserves raw event data while capturing tokens
+// Native Anthropic SSE pass-through mode preserves raw event data while capturing tokens and resets stream_done on message_stop
 let nat=run(J+'/FormatClaudeStream.js',{"flow.claude_input_tokens":"3","response.event.current.data":'{"type":"message_delta","usage":{"output_tokens":4}}'});
-assert.strictEqual(nat["response.event.current.data"],'{"type":"message_delta","usage":{"output_tokens":4}}'); assert.strictEqual(nat["flow.totalTokenCount"],"7");
+assert.strictEqual(nat["response.event.current.data"],'{"type":"message_delta","usage":{"output_tokens":4}}'); assert.strictEqual(nat["flow.totalTokenCount"],"7"); assert.strictEqual(nat["flow.stream_done"],"true");
+nat=run(J+'/FormatClaudeStream.js',Object.assign(nat,{"response.event.current.data":'{"type":"message_stop"}'}));
+assert.strictEqual(nat["flow.stream_done"],"false");
+// Antigravity /v1internal envelope unwrapping + @YYYYMMDD stripping on quota_model
+let agy=run(J+'/ExtractPrompt.js',{"request.content":JSON.stringify({model:"gemini-3.6-flash@20260501",request:{contents:[{parts:[{thought:true,text:"think"},{text:"ask"}]}],session_id:"sess-1"}})});
+assert.strictEqual(agy["flow.userPrompt"],"ask"); assert.strictEqual(agy["flow.quota_model"],"gemini-3.6-flash"); assert.strictEqual(JSON.parse(agy["request.content"]).session_id,undefined);
+// Claude Code 1P anthropic-beta header filtering, -YYYYMMDD -> @YYYYMMDD mapping & count_tokens handling
+let cc=run(J+'/ClaudeRequestPrep.js',{"flow.model":"claude-sonnet-4-5-20250929","request.header.anthropic-beta":"claude-code-20250219, advisor-tool-2026-03-01, thinking-token-count-2026-05-13","request.content":JSON.stringify({messages:[{role:"user",content:"hi"}]})});
+assert.strictEqual(cc["flow.target_model"],"claude-sonnet-4-5@20250929"); assert.strictEqual(cc["request.header.anthropic-beta"],"claude-code-20250219,thinking-token-count-2026-05-13");
+let hk=run(J+'/ClaudeRequestPrep.js',{"flow.model":"claude-haiku-5-5","proxy.pathsuffix":"/v1/messages/count_tokens","request.header.anthropic-beta":"thinking-token-count-2026-05-13,inline-tools-2026-09-15","request.content":JSON.stringify({model:"claude-haiku-5-5",messages:[{role:"user",content:"hi"}]})});
+assert.strictEqual(hk["flow.claude_action"],"countTokens"); assert.strictEqual(hk["request.header.anthropic-beta"],""); assert.strictEqual(JSON.parse(hk["request.content"]).anthropic_version,undefined);
+// OpenAI normalization + SSE finishReason / [DONE] non-duplication
+let oai=run(J+'/NormalizeOpenAIRequest.js',{"flow.is_streaming":"true","request.content":JSON.stringify({model:"gemini-3.6-flash",messages:[{role:"user",content:"hi"}]})},{defaultModel:"gemini-3.6-flash"});
+let oaiBody=JSON.parse(oai["request.content"]); assert.strictEqual(oaiBody.model,"google/gemini-3.6-flash"); assert.strictEqual(oaiBody.stream_options.include_usage,true);
+let sm=run(J+'/StreamMetrics.js',{"response.event.current.data":JSON.stringify({candidates:[{content:{parts:[{text:"Hi"}]}}],usageMetadata:{promptTokenCount:5,candidatesTokenCount:2,totalTokenCount:7}})});
+assert.strictEqual(sm["flow.stream_done"],"false"); assert.strictEqual(sm["flow.responseText"],"Hi");
+sm=run(J+'/StreamMetrics.js',Object.assign(sm,{"response.event.current.data":JSON.stringify({candidates:[{content:{parts:[{text:"!"}]},finishReason:"STOP"}],usageMetadata:{promptTokenCount:5,candidatesTokenCount:3,thoughtsTokenCount:4,totalTokenCount:12}})}));
+assert.strictEqual(sm["flow.stream_done"],"true"); assert.strictEqual(sm["flow.thoughtsTokenCount"],"4"); assert.strictEqual(sm["flow.responseText"],"Hi!");
+sm=run(J+'/StreamMetrics.js',Object.assign(sm,{"response.event.current.data":"data: [DONE]"}));
+assert.strictEqual(sm["flow.stream_done"],"false");
 JSON.parse(run(J+'/PrepRouterRequest.js',{"flow.userPrompt":"x"})["flow.routerBody"]);
 console.log("ok");
 """
 
     def test_generated_js(self):
         out = self.p("ai")
-        py(AI, "--out", out, "--project", "p", "--claude", "--auto-route", "--token-quota")
+        py(AI, "--out", out, "--project", "p", "--claude", "--openai", "--auto-route", "--token-quota")
         h = self.p("h.js")
         open(h, "w").write(self.HARNESS)
         run("node", h, os.path.join(out, "apiproxy/resources/jsc"))
@@ -322,6 +357,37 @@ class ValidatorCatchesBugs(Base):
         self.assertIn("reading response.event.current.data", r.stdout)
         self.assertIn("supported only on SanitizeModelResponse", r.stdout)
         self.assertIn("outside <EventFlow>", r.stdout)
+
+    def test_ide_gateway_and_product_bugs(self):
+        out = self.p("ai_ide")
+        py(AI, "--out", out, "--project", "p", "--token-quota", "--analytics")
+        # 1. Escaped double quotes inside <Condition> JavaRegex (causes expressions.parser.RegexRequired on Apigee X)
+        st = os.path.join(out, "apiproxy/targets/gemini-vertex-stream-target.xml")
+        self._sub(st, 'flow.stream_done = "true"',
+                  'response.event.current.data JavaRegex "(?s).*(\\"finishReason\\").*"')
+        # 2. EventFlow JS setting flow.stream_done="true" without resetting flow.stream_done="false"
+        js = os.path.join(out, "apiproxy/resources/jsc/StreamMetrics.js")
+        self._sub(js, 'context.setVariable("flow.stream_done", "false");\n', "")
+        # 3. Unguarded DataCapture in ProxyEndpoint PostFlow/Response when EventFlow is used
+        px = os.path.join(out, "apiproxy/proxies/default.xml")
+        self._sub(px, '<Name>DC-ModelAnalytics</Name>\n        <Condition>request.verb = "POST" and response.status.code = 200 and flow.is_streaming != "true"</Condition>',
+                  '<Name>DC-ModelAnalytics</Name>\n        <Condition>request.verb = "POST" and response.status.code = 200</Condition>')
+        # 4. API product with >1 entity in llmOperations AND mismatched operationGroup vs llmOperationGroup apiSource
+        prod_path = os.path.join(out, "api_product.json")
+        prod = json.load(open(prod_path))
+        prod["llmOperationGroup"]["operationConfigs"][0]["llmOperations"].append(
+            {"resource": "/**", "methods": ["POST"], "model": "gemini-3.5-pro"}
+        )
+        prod["operationGroup"]["operationConfigs"].append(
+            {"apiSource": "other-proxy-without-llm", "operations": [{"resource": "/**", "methods": ["POST"]}]}
+        )
+        json.dump(prod, open(prod_path, "w"))
+        r = py(VALIDATE, out, "--strict", ok=False)
+        self.assertIn("expressions.parser.RegexRequired", r.stdout)
+        self.assertIn("without resetting flow.stream_done='false'", r.stdout)
+        self.assertIn("DataCapture 'DC-ModelAnalytics' in PostFlow/Response lacks a streaming guard", r.stdout)
+        self.assertIn("Operations must contain exactly one entity", r.stdout)
+        self.assertIn("do not match llmOperationGroup apiSources", r.stdout)
 
 
 class ValidatorBestPractices(Base):
@@ -689,6 +755,38 @@ class ConsumerAndConfigManagement(Base):
         self.ctl("targetserver-delete", "orders-backend", ok=False)
         self.ctl("targetserver-delete", "orders-backend", "--yes")
         self.assertEqual(self.state.targetservers, {})
+
+    def test_product_apply_validates_llm_operations(self):
+        bad1 = self.p("bad_multi_ops.json")
+        json.dump({
+            "name": "bad-multi",
+            "environments": ["dev"],
+            "llmOperationGroup": {"operationConfigs": [{
+                "apiSource": "ai-gw",
+                "llmOperations": [
+                    {"resource": "/**", "methods": ["POST"], "model": "gemini-3.6-flash"},
+                    {"resource": "/**", "methods": ["POST"], "model": "claude-haiku-5-5"},
+                ],
+            }]},
+        }, open(bad1, "w"))
+        r1 = self.ctl("product-apply", bad1, ok=False)
+        self.assertIn("exactly 1 entity", r1.stderr)
+
+        bad2 = self.p("bad_mismatch.json")
+        json.dump({
+            "name": "bad-mismatch",
+            "environments": ["dev"],
+            "operationGroup": {"operationConfigs": [
+                {"apiSource": "ai-gw", "operations": [{"resource": "/**", "methods": ["POST"]}]},
+                {"apiSource": "extra-gw", "operations": [{"resource": "/**", "methods": ["POST"]}]},
+            ]},
+            "llmOperationGroup": {"operationConfigs": [{
+                "apiSource": "ai-gw",
+                "llmOperations": [{"resource": "/**", "methods": ["POST"], "model": "gemini-3.6-flash"}],
+            }]},
+        }, open(bad2, "w"))
+        r2 = self.ctl("product-apply", bad2, ok=False)
+        self.assertIn("do not match llmOperationGroup", r2.stderr)
 
 
 class DeployScript(Base):

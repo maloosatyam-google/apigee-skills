@@ -1,29 +1,30 @@
 ---
 name: apigee-ai-gateway
 description: >-
-  Design, scaffold, update and operate an Apigee X AI Gateway (LLM proxy) in front of Vertex AI Gemini and
-  Anthropic Claude (and other LLM APIs), supporting both buffered (:generateContent) and Server-Sent Events (SSE)
-  streaming (:streamGenerateContent / <EventFlow content-type="text/event-stream">). Use for model routing
-  (direct, multi-provider with Gemini<->Claude buffered + SSE shape conversion, and /auto classifier routing driven
+  Design, scaffold, update and operate an Apigee X AI Gateway (LLM & IDE coding-agent proxy) in front of Vertex AI
+  Gemini, Anthropic Claude, and OpenAI-compatible endpoints, supporting buffered calls and Server-Sent Events (SSE)
+  streaming (:streamGenerateContent / :streamRawPredict / <EventFlow content-type="text/event-stream">). Use for IDE
+  and Copilot gateways (Google Antigravity, Claude Code & Desktop, GitHub Copilot BYOK, Microsoft Copilot / Azure
+  OpenAI), model routing (direct, multi-provider Gemini/Anthropic/OpenAI mediation, and /auto classifier routing driven
   by API product attributes), Model Armor guardrails (SanitizeUserPrompt / SanitizeModelResponse incl. SSE
   ContinuousScan), LLM token quotas (LLMTokenQuota enforce + buffered/SSE count pair, PromptTokenLimit), semantic
   caching (SemanticCacheLookup/Populate), cost and budget governance (KVM rate card, Quota micro-dollar budgets,
-  MonetizationLimitsCheck + DataCapture), per-user attribution, failover and gateway telemetry headers.
-  Standalone: includes a scaffold that generates a deployable bundle and the matching llmOperationGroup API product.
+  MonetizationLimitsCheck + 8-collector DataCapture), multi-header API key + JWT user attribution, and failover.
+  Standalone: includes a scaffold that generates a deployable bundle and matching operationGroup + llmOperationGroup API product.
 ---
 
 # Apigee AI Gateway
 
-Build a **model-agnostic AI Gateway** on Apigee X. Clients call one endpoint with one API key.
+Build a **model-agnostic AI & IDE Gateway** on Apigee X. Clients and coding assistants call one endpoint with one API key.
 The gateway authenticates, screens, rate-limits, caches, routes, prices and logs every LLM call.
 Shares the validator/deploy scripts and the full policy XML reference with
 [`apigee-proxy-builder`](../apigee-proxy-builder/SKILL.md); changes to a deployed gateway go through
 [`apigee-proxy-lifecycle`](../apigee-proxy-lifecycle/SKILL.md).
 
 ## When to use
-- "Put Apigee in front of Gemini / Claude", "add SSE streaming for AI proxies", "add Model Armor", "token quota per user/app/model"
-- "semantic cache", "auto-route prompts to the cheapest suitable model", "budget / chargeback / prepaid wallet"
-- Reviewing or debugging an LLM proxy (SSE stream cut off at 30s, empty `response.content`, quota never trips, cache never hits, cost is wrong, 404 with an empty model)
+- "Put Apigee in front of Gemini / Claude / OpenAI", "build an IDE gateway for Antigravity, Claude Code, GitHub Copilot, or Microsoft Copilot", "add SSE streaming for AI proxies"
+- "add Model Armor", "token quota per user/app/model", "semantic cache", "auto-route prompts to the cheapest suitable model", "budget / chargeback / prepaid wallet"
+- Reviewing or debugging an LLM proxy (SSE stream cut off at 30s, duplicate `<EventFlow>` quota/analytics firing, `expressions.parser.RegexRequired` deploy error, Claude `anthropic-beta` HTTP 400 storms, `InvalidAPICallAsNoApiProductMatchFound`, empty `response.content`)
 
 ## Prerequisites (check before deploying)
 - Vertex AI API enabled; runtime service account with `roles/aiplatform.user`
@@ -69,12 +70,14 @@ with `x-use-cache: true` → `x-gateway-cache-status: HIT` (skips the model, no 
 ### Scaffold options
 | Flag | Adds |
 |---|---|
-| *(default)* `--sse` / `--no-sse` | SSE streaming enabled by default: dedicated `*-stream-target` TargetEndpoints (`response.streaming.enabled=true`, 300s timeouts) + `<EventFlow content-type="text/event-stream">`. Pass `--no-sse` to refuse streaming explicitly with HTTP 501 |
-| `--token-quota` | `LTQ-TokenEnforce` (conditional flow, cache-miss only) + `LTQ-TokenCount` (buffered PostFlow) + `LTQ-TokenCountSSE` (`EventFlow`), limits from product `llmTokenQuota` |
+| *(default)* `--sse` / `--no-sse` | SSE streaming enabled by default: dedicated `*-stream-target` TargetEndpoints (`response.streaming.enabled=true`, 300s timeouts) + `<EventFlow content-type="text/event-stream">`, plus `/api/hello` startup health probe and multi-header API key extraction (`Authorization: Bearer`, `api-key`, `x-api-key`, `x-apikey`, `x-goog-api-key`). Pass `--no-sse` to refuse streaming explicitly with HTTP 501 |
+| `--token-quota` | `LTQ-TokenEnforce` (conditional flow, cache-miss only, skips `:countTokens`) + `LTQ-TokenCount` (buffered PostFlow) + `LTQ-TokenCountSSE` (`EventFlow` on `flow.stream_done = "true"`), limits from product `llmTokenQuota` |
 | `--prompt-token-limit 5000pm` | `PromptTokenLimit` surge protection per app |
 | `--armor-region R` | `SanitizeUserPrompt` (blocks) + `SanitizeModelResponse` (buffered PostFlow) + `SMR-SanitizeModelResponseSSE` (`<ContinuousScan>true</ContinuousScan>` in `EventFlow`) |
 | `--cache-region R ...` | Opt-in semantic cache (`x-use-cache: true`, bypassed automatically on SSE requests) with HIT/MISS tracking |
-| `--claude [--claude-model M]` | `claude-vertex-target` + `claude-vertex-stream-target`, `ClaudeRequestPrep.js` (Gemini → Anthropic Messages incl. `stream: true`, tools, system, generationConfig), `FormatClaudeResponse.js` (buffered) and `FormatClaudeStream.js` (real-time Anthropic SSE → Gemini SSE chunks in `EventFlow`) |
+| `--claude [--claude-model M]` | `claude-vertex-target` + `claude-vertex-stream-target`, `ClaudeRequestPrep.js` (Gemini ↔ Anthropic Messages + native `/v1/messages` & `/count_tokens`, `-YYYYMMDD` → `@YYYYMMDD`, 1P `anthropic-beta` filtering), `FormatClaudeResponse.js` and `FormatClaudeStream.js` |
+| `--openai` | `openai-vertex-target` + `openai-vertex-stream-target` (`/v1/chat/completions`, `/openai/deployments/{model}/chat/completions`, `GET /v1/models` discovery), `NormalizeOpenAIRequest.js` (`google/` prefix + `stream_options.include_usage`) |
+| `--analytics` | 8-collector `DC-ModelAnalytics` (buffered `PostFlow` + SSE `EventFlow`) and `DC-FaultAnalytics` (`DefaultFaultRule`) |
 | `--auto-route [--router-model M]` | `/models/auto:{generateContent\|streamGenerateContent}`: classifier ServiceCallout (structured output) → `AutoRouting.js` reads `routing.model.<category>` from the caller's product |
 
 ## Architecture (request lifecycle)
@@ -114,8 +117,8 @@ by hand from [`policies_ai_gateway.md`](../apigee-proxy-builder/references/polic
   the target model from the **API product attributes** `routing.model.<category>`
   (`verifyapikey.VA-VerifyAPIKey.apiproduct.routing.model.coding`). Each persona product gets its own model
   map without any proxy change. Falls back to `routing.model.general`, then the default model.
-- **Other providers (OpenAI-compatible, self-hosted):** add a TargetEndpoint + RouteRule; normalise the response to the
-  Gemini `usageMetadata` shape (or point `LLMTokenUsageSource` at the provider's usage field).
+- **Other providers & IDE / Copilot Gateways (Antigravity, Claude Code & Desktop, GitHub Copilot, Microsoft Copilot / Azure OpenAI):**
+  use `--openai` for Vertex OpenAI Chat Completions (`/v1/chat/completions`, `/openai/deployments/{model}/chat/completions`, `GET /v1/models`) and `--claude` for Anthropic Messages (`/v1/messages`, `/v1/messages/count_tokens`). Full client-by-client wire quirks, `anthropic-beta` header filtering, `/v1internal` unwrapping, Windows UTF-8-no-BOM `admin_settings.json`, and OpenAI→Claude mediation: [references/ide_and_coding_agent_gateways.md](references/ide_and_coding_agent_gateways.md).
 - Details, failover and streaming: [references/model_routing_playbook.md](references/model_routing_playbook.md).
 
 ## 2. Guardrails (Model Armor)
@@ -182,9 +185,8 @@ which only runs on a miss. The cache key is the prompt only, so do not classify 
   - Read the current event payload from `response.event.current.data` (or full raw frame `response.event.current.content`;
     setting `response.event.current.content = ""` drops an event). `response.content` is **empty** during streaming.
   - Place `SanitizeModelResponse` (`<ContinuousScan>true</ContinuousScan>`) **before** `LLMTokenQuota` and `DataCapture`
-    so downstream steps only see checked events, and guard `LTQ-TokenCountSSE` (`jsonPath(..., response.event.current.data, false)`)
-    on the final usage event (`finishReason` / `candidatesTokenCount`) so intermediate Gemini `promptTokenCount` chunks are not double-counted.
-  - Guard buffered `PostFlow` payload policies (`EV-ModelResponse`, `LTQ-TokenCount`, `SCP-Semantic-Cache-Populate`,
+    so downstream steps only see checked events. Run `JS-StreamMetrics` / `JS-FormatClaudeStream` first (resetting `flow.stream_done = "false"` on line 1 of every chunk and setting `flow.stream_done = "true"` **only** on Gemini `candidates[0].finishReason`, Claude `message_delta`, or OpenAI `usage`), and guard `LTQ-TokenCountSSE` + `DC-ModelAnalytics` on `flow.stream_done = "true"` (never use escaped `\"` inside `<Condition>` `JavaRegex`).
+  - Guard buffered `PostFlow` payload policies (`EV-ModelResponse`, `LTQ-TokenCount`, `DC-ModelAnalytics`, `SCP-Semantic-Cache-Populate`,
     `SMR-SanitizeModelResponse`) and `SemanticCacheLookup` with `flow.is_streaming != "true"`.
   - Increase `keepalive.timeout.millis` and `io.timeout.millis` (`300000` ms) on streaming targets **and** ensure your
     northbound Cloud Load Balancer backend service `timeout_sec` is `>= 300` (Google Cloud LB defaults to 30s; our
@@ -203,13 +205,19 @@ Model or quota changes usually belong in the **API product** (`llmOperationGroup
 ## Troubleshooting
 | Symptom | Likely cause |
 |---|---|
+| Deploy fails with `expressions.parser.RegexRequired` | `<Condition>` contains backslash-escaped double quotes `\"` inside a string or `JavaRegex` literal. Parse JSON in JavaScript and test `flow.stream_done = "true"` instead |
+| SSE `LTQ-TokenCountSSE` / `DC-ModelAnalytics` fires twice | `<EventFlow>` JS did not reset `flow.stream_done = "false"` on line 1 before trailing `data: [DONE]` / `message_stop`, or keyed Gemini completion on `candidatesTokenCount` instead of `candidates[0].finishReason` |
 | SSE stream drops after ~30 seconds | Northbound Cloud Load Balancer `backend_service.timeout_sec` left at the 30s default, or target `io.timeout.millis` / `keepalive.timeout.millis` too low (set to 300s) |
 | SSE responses arrive all at once (not streaming) | Missing `response.streaming.enabled=true` on the streaming target, or an unguarded `ExtractVariables` / `JavaScript` policy in `PostFlow` accessed `response.content` and forced full-body buffering |
 | `<EventFlow>` policies never execute on Gemini stream | Upstream URL called `:streamGenerateContent` without `?alt=sse` (returns `application/json` instead of `text/event-stream`), or `<EventFlow>` placed in `ProxyEndpoint` when the `TargetEndpoint` also defines an `<EventFlow>` |
-| SSE token quota overcounts by N× prompt tokens | `LTQ-TokenCountSSE` read `$.usageMetadata.totalTokenCount` on every Gemini chunk without guarding on `finishReason`/`candidatesTokenCount`, or used `want-array=true` on `response.event.current.data` |
+| OpenAI SSE omits token counts | Upstream Vertex `/endpoints/openapi/chat/completions` call lacked `"stream_options": {"include_usage": true}` in the JSON request body |
 | Empty `response.content` on `:generateContent` | Buffered and SSE calls share the same `TargetEndpoint`. Split into separate buffered and `-stream-target` TargetEndpoints |
+| Product create/update fails HTTP 400 `Operations must contain exactly one entity` | An `llmOperationGroup.operationConfigs[]` entry has multiple items in `llmOperations`. Split into one `operationConfig` per model |
+| `InvalidAPICallAsNoApiProductMatchFound` (HTTP 500) | Model string not in `llmOperations` (`@` vs `-` suffix), **or** an API product's `operationGroup` lists a proxy that is missing from its `llmOperationGroup` |
+| IDE onboarding fails `401 InvalidApiKeyForGivenResource` on `GET /v1/models` | API product `operationGroup` only allows `POST`; include `"GET"`, `"POST"`, `"OPTIONS"` on `/**` |
+| Claude Code retries 4–5× with Vertex HTTP 400 (`pinnacle-error-category: user`) | 1P-only flags in `anthropic-beta` (`advisor-tool-*`, `per-turn-control-*`, `inline-tools-*`) or `?beta=true` query param leaked to Vertex. Filter `anthropic-beta` and set `target.copy.queryparams=false` |
+| Antigravity on Windows ignores `admin_settings.json` | PowerShell `>` wrote UTF-16 LE BOM, or `"models"` was nested inside `"gateway"` instead of top-level. Write UTF-8 without BOM |
 | Token quota never trips | LTQ pair mismatch, `flow.model` overwritten, or CountOnly fault swallowed (`continueOnError`). Check `ratelimit.LTQ-TokenCount.failed` in trace |
-| `InvalidAPICallAsNoApiProductMatchFound` | Model string not in the product's `llmOperations` (for example `@` and `-` revision separators differ) |
 | 404 from Vertex with an empty model in the URL | Routing skipped. Do not guard routing flows on `flow.cached` |
 | Claude 400 `messages: roles must alternate` / `max_tokens` | Body not converted: `JS-ClaudeRequestPrep` missing from the Claude target, or the request was neither Gemini nor Messages shape |
 | `/models/auto` always uses the general model | Classifier call failed (SA lacks `aiplatform.user`, router model not available) or product lacks `routing.model.*` attributes |

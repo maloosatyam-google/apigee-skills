@@ -199,8 +199,8 @@ values are only a fallback. When `LLMTokenQuota` and `PromptTokenLimit` execute,
 5. **`ratelimit.{CountOnly}.allowed.count` is `Long.MAX_VALUE`.** For "x% used" warnings, read
    the limit from `verifyapikey.{VA}.apiproduct.developer.llmQuota.limit` instead.
 6. **For SSE streaming (`<EventFlow content-type="text/event-stream"><Response>`), add a separate CountOnly policy (`LTQ-TokenCountSSE`) sharing the exact same `<SharedName>`, `<Identifier>`, and `<LLMModelSource>`:**
-   - Read from `response.event.current.data` (`response.content` is empty during SSE) and set `jsonPath`'s 3rd argument (`want-array`) to **`false`** so a scalar integer is returned instead of an array.
-   - Guard the `<Step>` on the **final** Gemini SSE usage chunk (`finishReason` / `candidatesTokenCount`), because intermediate Gemini SSE chunks repeat `promptTokenCount` inside `usageMetadata.totalTokenCount`:
+   - Read from `response.event.current.data` (`response.content` is empty during SSE) and set `jsonPath`'s 3rd argument (`want-array`) to **`false`** so a scalar integer is returned instead of an array (or read `{firstnonnull(flow.totalTokenCount,jsonPath('$.usageMetadata.totalTokenCount',response.event.current.data,false))}` populated by an upstream `<EventFlow>` JavaScript step across Gemini, Claude `input_tokens + output_tokens`, and OpenAI `usage.total_tokens`).
+   - Guard the `<Step>` on `flow.stream_done = "true"` set by your `<EventFlow>` JavaScript (resetting `flow.stream_done = "false"` on line 1 of every chunk, and setting `flow.stream_done = "true"` **only** when `candidates[0].finishReason` is present on Gemini, `message_delta` on Claude, or `usage` on OpenAI). Never put backslash-escaped quotes (`\"`) inside `<Condition>` `JavaRegex` literals — Apigee X rejects them at deploy time with `expressions.parser.RegexRequired`:
    ```xml
    <LLMTokenQuota continueOnError="true" enabled="true" name="LTQ-TokenCountSSE" type="rollingwindow">
      <Allow count="1000" countRef="verifyapikey.VA-VerifyAPIKey.apiproduct.developer.llmQuota.limit"/>
@@ -209,14 +209,14 @@ values are only a fallback. When `LLMTokenQuota` and `PromptTokenLimit` execute,
      <Distributed>true</Distributed>
      <Synchronous>true</Synchronous>
      <Identifier ref="flow.emailId"/>
-     <LLMTokenUsageSource>{jsonPath('$.usageMetadata.totalTokenCount',response.event.current.data,false)}</LLMTokenUsageSource>
+     <LLMTokenUsageSource>{firstnonnull(flow.totalTokenCount,jsonPath('$.usageMetadata.totalTokenCount',response.event.current.data,false))}</LLMTokenUsageSource>
      <LLMModelSource>{firstnonnull(flow.quota_model,flow.model)}</LLMModelSource>
      <CountOnly>true</CountOnly>
      <SharedName>common-counter</SharedName>
    </LLMTokenQuota>
    <!-- Attached in streaming TargetEndpoint <EventFlow content-type="text/event-stream"><Response> with:
-        <Condition>response.event.current.data JavaRegex "(?s).*(\"finishReason\"|\"candidatesTokenCount\").*"</Condition>
-        And guard buffered PostFlow LTQ-TokenCount with: flow.is_streaming != "true" -->
+        <Condition>flow.stream_done = "true"</Condition>
+        And guard buffered PostFlow LTQ-TokenCount + DC-ModelAnalytics with: flow.is_streaming != "true" -->
    ```
 
 Variables: `ratelimit.{policy}.used.count`, `.allowed.count`, `.exceed.count`, `.expiry.time`,

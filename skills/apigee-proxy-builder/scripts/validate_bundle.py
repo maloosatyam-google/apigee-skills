@@ -2,7 +2,7 @@
 """Standalone Apigee X bundle validator for API proxies AND shared flows (stdlib only).
 
 Usage:
-  python3 validate_bundle.py <proxy-or-sharedflow-dir | apiproxy/ | sharedflowbundle/ | bundle.zip> [--strict] [--json]
+  python3 validate_bundle.py <proxy-or-sharedflow-dir | apiproxy/ | sharedflowbundle/ | bundle.zip | product.json> [--product FILE] [--strict] [--json]
 
 Checks:
   * every XML file is well-formed; policy `name` attribute matches its file name
@@ -14,7 +14,9 @@ Checks:
       - (API proxies) no authentication policy attached anywhere -> warning
       - literal secrets in policies / JS (Google API keys, bearer tokens, private keys, password values)
       - KVM <InitialEntries> with literal values -> warning (seed KVMs out of band)
-  * AI/MCP-policy sanity:
+  * AI/MCP-policy & API product sanity:
+      - conditions containing escaped quotes `\"` inside string/JavaRegex literals -> error (Apigee X
+        rejects them at deploy time with `expressions.parser.RegexRequired`)
       - LLMTokenQuota / Quota pairs that share <SharedName> agree on Identifier, LLMModelSource,
         Allow/Interval/TimeUnit, and include exactly one EnforceOnly and one CountOnly/Weight side
       - LLMTokenQuota CountOnly policies have <LLMTokenUsageSource>
@@ -26,8 +28,11 @@ Checks:
         ratelimit.<name>.failed / exceed.count (otherwise the limit is never enforced)
       - SSE / <EventFlow> sanity: content-type="text/event-stream", <= 4 policies in <Response> only,
         7-policy allowlist (DataCapture/Javascript/LLMTokenQuota/MessageLogging/PublishMessage/RaiseFault/
-        SanitizeModelResponse), response.streaming.enabled=true on TargetEndpoint, and response.event.current.data
-        sources (not response.content) for LLMTokenQuota / SanitizeModelResponse in <EventFlow>
+        SanitizeModelResponse), response.streaming.enabled=true on TargetEndpoint, response.event.current.data
+        sources (not response.content) for LLMTokenQuota / SanitizeModelResponse in <EventFlow>, per-chunk
+        reset of flow.stream_done="false" in EventFlow JS, and streaming guards on PostFlow DataCapture
+      - API product JSON (api_product*.json / products/*.json / --product): single-entity llmOperations per
+        operationConfig, and matching apiSource sets when operationGroup and llmOperationGroup coexist
 Exit code 0 = no errors (warnings allowed unless --strict).
 """
 import json
@@ -102,11 +107,28 @@ def locate_bundle(arg):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    strict = "--strict" in sys.argv
-    as_json = "--json" in sys.argv
-    if not args:
+    raw_argv = sys.argv[1:]
+    strict, as_json = False, False
+    extra_products, args = [], []
+    i = 0
+    while i < len(raw_argv):
+        a = raw_argv[i]
+        if a == "--strict":
+            strict = True
+        elif a == "--json":
+            as_json = True
+        elif a == "--product" and i + 1 < len(raw_argv):
+            i += 1
+            extra_products.append(raw_argv[i])
+        elif not a.startswith("--"):
+            args.append(a)
+        i += 1
+    if not args and not extra_products:
         sys.exit(__doc__)
+    if not args or (args[0].endswith(".json") and os.path.isfile(args[0])):
+        for pf in args + extra_products:
+            validate_product_file(pf)
+        return report(strict, as_json)
     root_dir, kind = locate_bundle(args[0])
 
     # ---- well-formedness of every XML
@@ -216,7 +238,8 @@ def main():
     security_checks(root_dir, kind, policies, attached)
     best_practice_checks(root_dir, policies, endpoints)
     ai_checks(policies, all_conditions)
-    sse_checks(policies, endpoints)
+    sse_checks(root_dir, policies, endpoints)
+    product_checks(args[0], root_dir, extra_products)
     return report(strict, as_json)
 
 
@@ -424,16 +447,23 @@ def ai_checks(policies, conditions):
                 err(f"DataCapture '{n}': default=\"{d}\" is recorded literally (not a message template)")
 
     pp_names = {n for n, _ in by_type.get("ParsePayload", [])}
+    seen_escaped = set()
     for label, step, c in conditions:
+        s = c.strip()
+        if '\\"' in s and (label, s) not in seen_escaped:
+            seen_escaped.add((label, s))
+            err(f"{label}: condition {s!r} contains escaped quote '\\\"' - Apigee X condition parser "
+                f"rejects escaped quotes inside string/JavaRegex literals (expressions.parser.RegexRequired)")
         for ref in set(re.findall(r"parsepayload\.([A-Za-z0-9_-]+)\.", c)):
             if ref not in pp_names:
                 err(f"{label}: condition references parsepayload.{ref}.* but no ParsePayload policy '{ref}' exists")
 
 
-def sse_checks(policies, endpoints):
+def sse_checks(root_dir, policies, endpoints):
     """Server-Sent Events (<EventFlow content-type='text/event-stream'>) rules from Apigee X docs."""
     in_ef, outside_ef = set(), set()
     targets_with_ef = set()
+    has_any_ef = False
     for label, ep in endpoints:
         efs = ep.findall("EventFlow")
         ef_ids = {id(s) for ef in efs for s in ef.iter("Step")}
@@ -444,6 +474,7 @@ def sse_checks(policies, endpoints):
                     outside_ef.add(n)
         if not efs:
             continue
+        has_any_ef = True
         if ep.tag == "TargetEndpoint":
             targets_with_ef.add(ep.get("name"))
             props = {p.get("name"): (p.text or "").strip().lower()
@@ -479,6 +510,24 @@ def sse_checks(policies, endpoints):
                 elif pel.tag == "SanitizeModelResponse" and seen_ltq_or_dc:
                     warn(f"{label}: SanitizeModelResponse '{n}' in <EventFlow> runs after {', '.join(seen_ltq_or_dc)} - "
                          f"place SanitizeModelResponse before LLMTokenQuota/DataCapture so they only process checked events")
+                if pel.tag == "Javascript":
+                    res_url = text(pel, "ResourceURL") or ""
+                    if res_url.startswith("jsc://"):
+                        js_path = os.path.join(root_dir, "resources", "jsc", res_url[6:])
+                        if os.path.isfile(js_path):
+                            js_src = open(js_path, encoding="utf-8", errors="ignore").read()
+                            sets_true = re.search(
+                                r"""setVariable\s*\(\s*['"]flow\.stream_done['"]\s*,\s*(['"]true['"]|true)\s*\)""",
+                                js_src,
+                            )
+                            resets_false = re.search(
+                                r"""setVariable\s*\(\s*['"]flow\.stream_done['"]\s*,\s*(['"]false['"]|false)\s*\)""",
+                                js_src,
+                            )
+                            if sets_true and not resets_false:
+                                warn(f"{label}: Javascript '{n}' ({res_url}) sets flow.stream_done='true' without "
+                                     f"resetting flow.stream_done='false' on each SSE chunk - trailing events like "
+                                     f"'data: [DONE]' will trigger downstream EventFlow policies twice")
                 if pel.tag == "LLMTokenQuota":
                     usage_src = text(pel, "LLMTokenUsageSource") or ""
                     model_src = text(pel, "LLMModelSource") or ""
@@ -496,17 +545,77 @@ def sse_checks(policies, endpoints):
                             f"reading response.event.current.data (response.content is empty during SSE)")
 
     for label, ep in endpoints:
-        if ep.tag == "ProxyEndpoint" and ep.find("EventFlow") is not None:
-            routed_ef = [text(rr, "TargetEndpoint") for rr in ep.findall("RouteRule")
-                         if text(rr, "TargetEndpoint") in targets_with_ef]
-            if routed_ef:
-                warn(f"{label}: ProxyEndpoint and TargetEndpoint(s) {routed_ef} both define <EventFlow> - "
-                     f"Apigee executes only the TargetEndpoint EventFlow")
+        if ep.tag == "ProxyEndpoint":
+            if ep.find("EventFlow") is not None:
+                routed_ef = [text(rr, "TargetEndpoint") for rr in ep.findall("RouteRule")
+                             if text(rr, "TargetEndpoint") in targets_with_ef]
+                if routed_ef:
+                    warn(f"{label}: ProxyEndpoint and TargetEndpoint(s) {routed_ef} both define <EventFlow> - "
+                         f"Apigee executes only the TargetEndpoint EventFlow")
+            if has_any_ef:
+                for st in ep.findall("./PostFlow/Response/Step"):
+                    n = text(st, "Name")
+                    if n in policies and policies[n].tag == "DataCapture":
+                        cond = text(st, "Condition") or ""
+                        if not re.search(r"stream", cond, re.I):
+                            warn(f"{label}: DataCapture '{n}' in PostFlow/Response lacks a streaming guard "
+                                 f"(e.g. flow.is_streaming != \"true\") - on SSE streams PostFlow/Response runs "
+                                 f"on 200 OK headers before token counts exist")
 
     for n in sorted(outside_ef - in_ef):
         if n in policies and "response.event.current." in ET.tostring(policies[n], encoding="unicode"):
             err(f"policy '{n}' references response.event.current.* outside <EventFlow> "
                 f"(only populated inside <EventFlow>)")
+
+
+def validate_product_dict(prod, label):
+    """Validate Apigee X API product rules (llmOperations cardinality & operationGroup alignment)."""
+    llm_cfgs = (prod.get("llmOperationGroup") or {}).get("operationConfigs") or []
+    for idx, cfg in enumerate(llm_cfgs):
+        ops = cfg.get("llmOperations") or []
+        if len(ops) != 1:
+            err(f"{label}: llmOperationGroup.operationConfigs[{idx}] has {len(ops)} llmOperations - "
+                f"Apigee X requires exactly 1 entity per operationConfig "
+                f"(HTTP 400 'Operations must contain exactly one entity')")
+    og_cfgs = (prod.get("operationGroup") or {}).get("operationConfigs") or []
+    if og_cfgs and llm_cfgs:
+        og_sources = {c.get("apiSource") for c in og_cfgs if c.get("apiSource")}
+        llm_sources = {c.get("apiSource") for c in llm_cfgs if c.get("apiSource")}
+        if og_sources != llm_sources:
+            err(f"{label}: operationGroup apiSources {sorted(og_sources)} do not match "
+                f"llmOperationGroup apiSources {sorted(llm_sources)} - VerifyAPIKey/LLMTokenQuota fail "
+                f"at runtime with HTTP 500 InvalidAPICallAsNoApiProductMatchFound")
+
+
+def validate_product_file(path):
+    try:
+        prod = json.loads(open(path, encoding="utf-8").read())
+    except Exception as e:
+        err(f"JSON parse error in {path}: {e}")
+        return
+    if isinstance(prod, dict):
+        validate_product_dict(prod, os.path.basename(path))
+
+
+def product_checks(arg, root_dir, extra_products):
+    seen = set()
+    candidates = list(extra_products or [])
+    if arg and not arg.endswith(".zip"):
+        parent = os.path.dirname(os.path.normpath(root_dir))
+        if os.path.isdir(parent):
+            for fn in sorted(os.listdir(parent)):
+                if re.match(r"^api_product.*\.json$", fn):
+                    candidates.append(os.path.join(parent, fn))
+            prod_dir = os.path.join(parent, "products")
+            if os.path.isdir(prod_dir):
+                for fn in sorted(os.listdir(prod_dir)):
+                    if fn.endswith(".json"):
+                        candidates.append(os.path.join(prod_dir, fn))
+    for path in candidates:
+        ap = os.path.abspath(path)
+        if ap not in seen and os.path.isfile(ap):
+            seen.add(ap)
+            validate_product_file(ap)
 
 
 def report(strict=False, as_json=False):
