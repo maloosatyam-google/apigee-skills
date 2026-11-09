@@ -135,7 +135,7 @@ def main():
     pol = "\n".join(f"    <Policy>{n}</Policy>" for n in sorted(P))
     open(os.path.join(root, f"{o.name}.xml"), "w").write(f"""{H}<SharedFlowBundle revision="1" name="{o.name}">
   <DisplayName>{o.name}</DisplayName>
-  <Description>Shared flow scaffolded by the apigee-api-proxy skill ({', '.join(feats)})</Description>
+  <Description>Shared flow scaffolded by the apigee-proxy-builder skill ({', '.join(feats)})</Description>
   <Policies>
 {pol}
   </Policies>

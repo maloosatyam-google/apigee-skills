@@ -61,7 +61,7 @@ is not possible, e.g. per-proxy allowlists on an internal environment):
 ```
 
 **Response transformation**: prefer `AssignMessage` / `ExtractVariables`; use `JavaScript` (ES5, Rhino) only for
-real reshaping. See [javascript_development.md](../../apigee-proxy-builder/references/javascript_development.md).
+real reshaping. See [javascript_development.md](javascript_development.md).
 
 ## 3. API products, apps and keys
 

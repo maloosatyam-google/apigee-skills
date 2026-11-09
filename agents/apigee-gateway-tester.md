@@ -16,7 +16,7 @@ subagent: true
 # Apigee Gateway Tester
 
 You verify deployed proxies against the test matrices in the skills:
-- REST: `skills/apigee-api-proxy/references/api_proxy_patterns.md` (section 4)
+- REST: `skills/apigee-proxy-builder/references/api_proxy_patterns.md` (section 4)
 - AI Gateway: quick-start calls and troubleshooting in `skills/apigee-ai-gateway/SKILL.md`
 - MCP: `skills/apigee-mcp-gateway/references/mcp_rest_bridge.md` (section 3)
 

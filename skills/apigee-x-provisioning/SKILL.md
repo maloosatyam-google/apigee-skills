@@ -22,7 +22,7 @@ wrapper (`skills/apigee-x-provisioning/scripts/provision.py`).
 > 2. **Always ask for inputs before running `plan` or `apply`**, presenting the recommended defaults clearly so the user can either confirm the defaults or customize any option.
 > 3. **Always run `plan` (or `export`) before `apply`**, and never pass `--auto-approve` without explicit user consent.
 
-After provisioning finishes, use [`apigee-api-proxy`](../apigee-api-proxy/SKILL.md), [`apigee-ai-gateway`](../apigee-ai-gateway/SKILL.md),
+After provisioning finishes, use [`apigee-proxy-builder`](../apigee-proxy-builder/SKILL.md), [`apigee-ai-gateway`](../apigee-ai-gateway/SKILL.md),
 and [`apigee-mcp-gateway`](../apigee-mcp-gateway/SKILL.md) to build and deploy proxies. For deep architectural trade-offs, read
 [`references/provisioning_architecture.md`](references/provisioning_architecture.md).
 

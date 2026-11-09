@@ -35,7 +35,7 @@ Legend: **V** = `validate_bundle.py` check · **S** = scaffolds generate it · *
 
 Failsafe `/` proxy:
 ```bash
-python3 skills/apigee-api-proxy/scripts/scaffold_api_proxy.py --out ./default-catchall --name default-catchall \
+python3 skills/apigee-proxy-builder/scripts/scaffold_api_proxy.py --out ./default-catchall --name default-catchall \
   --basepath / --target https://developers.example.com --auth none --spike-arrest 10ps
 # then replace the target with a RaiseFault 404 / redirect to the developer portal if preferred
 ```

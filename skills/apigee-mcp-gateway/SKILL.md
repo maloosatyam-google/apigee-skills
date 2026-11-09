@@ -104,7 +104,7 @@ For limits in a **REST** proxy behind an MCP server that forwards the caller's k
 Apigee can expose any OpenAPI-described proxy as an MCP server (tools generated from operations). Apply the same
 governance: register the spec in API hub, enable MCP, and protect it with API products listing the generated
 `tools/call/<operationId>` operations. Hand-built proxies (above) give full control over argument limits.
-Build the REST proxy itself with [`apigee-api-proxy`](../apigee-api-proxy/SKILL.md).
+Build the REST proxy itself with [`apigee-proxy-builder`](../apigee-proxy-builder/SKILL.md).
 
 ## 5. Observability
 `MessageLogging` in PostClientFlow with `parsepayload.PP-MCP.operation`, app, product, status and fault. Optional

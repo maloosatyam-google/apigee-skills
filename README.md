@@ -6,8 +6,7 @@ use cases:
 | Use case | Skill | What you get |
 |---|---|---|
 | **Provision Apigee X** (Terraform) | [`apigee-x-provisioning`](skills/apigee-x-provisioning/SKILL.md) | Full-fledged paid org Terraform module + `provision.py` (`wizard`, `plan`, `apply`, `export`): defaults to **PAYG + `INTERMEDIATE` env with Analytics + PSC + Google-managed keys & cert + no Data Residency + `nip.io`**; also supports `SUBSCRIPTION`, `VPC_PEERING`, CMEK, Data Residency, custom domains + Cloud DNS, multi-region HA, Cloud Armor, Static NAT IPs & Southbound PSC |
-| Any proxy task (start here) | [`apigee-proxy-builder`](skills/apigee-proxy-builder/SKILL.md) | 24 policy/flow references (incl. official best-practices and security-architecture checklists), `validate_bundle.py`, `deploy_bundle.sh` |
-| **API** Management (REST) | [`apigee-api-proxy`](skills/apigee-api-proxy/SKILL.md) | `scaffold_api_proxy.py` (API key / OAuth / JWT, OAS validation, quota, cache, CORS, JSON/XML threat protection, backend mTLS), `scaffold_shared_flow.py` |
+| **API** Proxy & Shared Flow Builder (REST + Core) | [`apigee-proxy-builder`](skills/apigee-proxy-builder/SKILL.md) | `scaffold_api_proxy.py` (API key / OAuth / JWT, OAS validation, quota, cache, CORS, JSON/XML threat protection, backend mTLS), `scaffold_shared_flow.py`, 25 policy/flow references (incl. official best-practices and security-architecture checklists), `validate_bundle.py`, `deploy_bundle.sh` |
 | **AI** Gateway (LLM & IDE) | [`apigee-ai-gateway`](skills/apigee-ai-gateway/SKILL.md) | `scaffold_ai_gateway.py` (Gemini + Claude + OpenAI, **IDE & Copilot gateways**, **SSE streaming `<EventFlow>`**, `/auto` routing, Model Armor incl. `ContinuousScan`, token quota, 8-collector analytics, semantic cache) |
 | **MCP** Tools Gateway | [`apigee-mcp-gateway`](skills/apigee-mcp-gateway/SKILL.md) | `scaffold_mcp_proxy.py` (per-tool products, argument limits, keyless handshake) |
 | Update existing proxies | [`apigee-proxy-lifecycle`](skills/apigee-proxy-lifecycle/SKILL.md) | `apigee_ctl.py` (export, diff, update, rollback, products, developers, apps & keys, KVMs, target servers, flow hooks, trace masks, trace), `bundle_edit.py` |
@@ -41,12 +40,12 @@ cd apigee-skills
 
 | Agent / IDE | User / Global Install | Project / Workspace Install | Loaded Artifacts |
 |---|---|---|---|
-| **Google Antigravity** (App, IDE, `agy` CLI) | `./install.sh` or `agy plugin install .` | `./install.sh --project /path/to/workspace` | 6 skills, 2 path-scoped rules, 2 subagents |
-| **Claude Code** | `./install.sh --claude ~` | `./install.sh --claude /path/to/repo` or `claude --plugin-dir .` | 6 skills, 2 path-scoped rules, 2 subagents |
-| **GitHub Copilot** (VS Code, CLI, Cloud Agent) | `./install.sh --copilot ~` | `./install.sh --copilot /path/to/repo` | 6 skills, 2 `.instructions.md` rules, 2 `.agent.md` agents |
-| **Gemini CLI** | `./install.sh --gemini ~` or `gemini extensions install .` | `./install.sh --gemini /path/to/repo` | 6 skills, 2 rules, 2 agents |
-| **OpenAI Codex / Cursor / Windsurf** | `./install.sh --codex ~` | `./install.sh --codex /path/to/repo` | 6 skills (`.agents/skills/`) |
-| **Any custom path** | — | `./install.sh --target /path/to/skills` | 6 skills |
+| **Google Antigravity** (App, IDE, `agy` CLI) | `./install.sh` or `agy plugin install .` | `./install.sh --project /path/to/workspace` | 5 skills, 2 path-scoped rules, 2 subagents |
+| **Claude Code** | `./install.sh --claude ~` | `./install.sh --claude /path/to/repo` or `claude --plugin-dir .` | 5 skills, 2 path-scoped rules, 2 subagents |
+| **GitHub Copilot** (VS Code, CLI, Cloud Agent) | `./install.sh --copilot ~` | `./install.sh --copilot /path/to/repo` | 5 skills, 2 `.instructions.md` rules, 2 `.agent.md` agents |
+| **Gemini CLI** | `./install.sh --gemini ~` or `gemini extensions install .` | `./install.sh --gemini /path/to/repo` | 5 skills, 2 rules, 2 agents |
+| **OpenAI Codex / Cursor / Windsurf** | `./install.sh --codex ~` | `./install.sh --codex /path/to/repo` | 5 skills (`.agents/skills/`) |
+| **Any custom path** | — | `./install.sh --target /path/to/skills` | 5 skills |
 
 Pass `--force` to overwrite an existing installation, or `--copy` with `./install.sh` to copy instead of symlinking the global Antigravity plugin. You can also run any script in `skills/*/scripts/` directly without an agent.
 
@@ -113,7 +112,7 @@ claude --plugin-dir /path/to/apigee-skills
 
 #### Usage in Claude Code
 - **Automatic**: Claude automatically activates the matching skill when you ask an Apigee question and enforces `.claude/rules/*.md` whenever you edit `**/apiproxy/**`, `**/sharedflowbundle/**`, or `**/api_product*.json`.
-- **Slash commands**: Invoke any skill directly with `/apigee-api-proxy`, `/apigee-ai-gateway`, `/apigee-mcp-gateway`, `/apigee-proxy-lifecycle`, `/apigee-proxy-builder`, or `/apigee-x-provisioning`.
+- **Slash commands**: Invoke any skill directly with `/apigee-proxy-builder`, `/apigee-ai-gateway`, `/apigee-mcp-gateway`, `/apigee-proxy-lifecycle`, or `/apigee-x-provisioning`.
 - **Subagents**: Delegate design or end-to-end verification to the `apigee-architect` or `apigee-gateway-tester` subagents (view with `/agents`).
 
 ---
@@ -127,7 +126,7 @@ GitHub Copilot supports Agent Skills (`.github/skills/` and `~/.copilot/skills/`
 ./install.sh --copilot /path/to/your-project
 ```
 This installs:
-- `.github/skills/<skill-name>/SKILL.md` (all 6 skills + scripts + references)
+- `.github/skills/<skill-name>/SKILL.md` (all 5 skills + scripts + references)
 - `.github/instructions/apigee_proxy_standards.instructions.md` and `security_and_governance.instructions.md` (auto-applied via `applyTo` globs when editing proxy bundles or products)
 - `.github/agents/apigee-architect.agent.md` and `apigee-gateway-tester.agent.md` (selectable in the VS Code Chat agent picker)
 
@@ -140,7 +139,7 @@ This installs:
 #### Option C: Cross-Agent Discovery or VS Code Plugin
 - VS Code Copilot also automatically discovers skills installed in `<workspace>/.agents/skills/` (`./install.sh --project`) or `<workspace>/.claude/skills/` (`./install.sh --claude`).
 - You can also install the repository as an Agent Plugin in VS Code via the Command Palette: **Chat: Install Plugin From Source** → select the `apigee-skills` folder.
-- Type `/skills` in VS Code Copilot Chat to inspect loaded skills, or invoke `/apigee-api-proxy`, `/apigee-ai-gateway`, etc. directly.
+- Type `/skills` in VS Code Copilot Chat to inspect loaded skills, or invoke `/apigee-proxy-builder`, `/apigee-ai-gateway`, etc. directly.
 
 ---
 
@@ -185,7 +184,7 @@ export APIGEE_ORG=my-org APIGEE_ENV=dev APIGEE_DEPLOY_SA=apigee-runtime@my-proj.
 S=skills
 
 # API proxy from an OpenAPI spec
-python3 $S/apigee-api-proxy/scripts/scaffold_api_proxy.py --out ./orders-v1 --name orders-v1 \
+python3 $S/apigee-proxy-builder/scripts/scaffold_api_proxy.py --out ./orders-v1 --name orders-v1 \
   --basepath /orders/v1 --target https://mocktarget.apigee.net --auth apikey --quota \
   --oas examples/specs/orders-v1.json --health
 python3 $S/apigee-proxy-lifecycle/scripts/apigee_ctl.py update ./orders-v1        # validate+import+deploy+wait
@@ -230,8 +229,7 @@ scripts/
   setup_cloud_scheduler.sh   provisions the weekly Google Cloud Scheduler job (`0 9 * * 1`)
   release_notes_state.json   tracks the last synced Apigee X release date & version
 skills/
-  apigee-proxy-builder/      core: SKILL.md, references/ (24 docs), scripts/validate_bundle.py, deploy_bundle.sh
-  apigee-api-proxy/          scaffold_api_proxy.py, scaffold_shared_flow.py, references/api_proxy_patterns.md
+  apigee-proxy-builder/      core + REST: SKILL.md, references/ (25 docs), scaffold_api_proxy.py, scaffold_shared_flow.py, validate_bundle.py, deploy_bundle.sh
   apigee-ai-gateway/         scaffold_ai_gateway.py, references/{model_routing_playbook.md,ide_and_coding_agent_gateways.md}
   apigee-mcp-gateway/        scaffold_mcp_proxy.py, references/mcp_rest_bridge.md
   apigee-proxy-lifecycle/    apigee_ctl.py, bundle_edit.py, references/update_playbook.md

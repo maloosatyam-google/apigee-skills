@@ -11,10 +11,10 @@ lint:
 # Generate one example bundle of each kind into ./build (offline, no Apigee access needed)
 examples:
 	rm -rf build && mkdir -p build
-	python3 skills/apigee-api-proxy/scripts/scaffold_api_proxy.py --out build/orders-v1 --name orders-v1 \
+	python3 skills/apigee-proxy-builder/scripts/scaffold_api_proxy.py --out build/orders-v1 --name orders-v1 \
 	  --basepath /orders/v1 --target https://mocktarget.apigee.net --auth apikey --quota --cors "*" \
 	  --oas examples/specs/orders-v1.json --cache-ttl 60 --health
-	python3 skills/apigee-api-proxy/scripts/scaffold_shared_flow.py --out build/sf-security --name sf-security \
+	python3 skills/apigee-proxy-builder/scripts/scaffold_shared_flow.py --out build/sf-security --name sf-security \
 	  --features apikey,spikearrest,threat,strip-auth
 	python3 skills/apigee-ai-gateway/scripts/scaffold_ai_gateway.py --out build/ai-gateway-v1 --project my-project \
 	  --token-quota --prompt-token-limit 5000pm --claude --openai --analytics --auto-route

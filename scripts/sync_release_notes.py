@@ -52,7 +52,7 @@ SKILL_KEYWORDS = {
         "ParsePayload", "parsepayload", "payloadOperationGroup", "JSON-RPC", "json-rpc",
         "MCP", "Model Context Protocol", "ConfigureAndDeployServer", "Tool performance",
     ],
-    "apigee-api-proxy": [
+    "apigee-proxy-builder": [
         "VerifyAPIKey", "OAuthV2", "VerifyJWT", "GenerateJWT", "DecodeJWT", "VerifyJWS",
         "GenerateJWS", "SpikeArrest", "Quota", "OASValidation", "JSONThreatProtection",
         "XMLThreatProtection", "RegularExpressionProtection", "CORS", "ResponseCache",
@@ -75,6 +75,7 @@ SKILL_FILES = {
         "skills/apigee-proxy-builder/references/policies_ai_gateway.md",
         "skills/apigee-ai-gateway/SKILL.md",
         "skills/apigee-ai-gateway/references/model_routing_playbook.md",
+        "skills/apigee-ai-gateway/references/ide_and_coding_agent_gateways.md",
         "skills/apigee-proxy-builder/scripts/validate_bundle.py",
     ],
     "apigee-mcp-gateway": [
@@ -82,7 +83,8 @@ SKILL_FILES = {
         "skills/apigee-mcp-gateway/SKILL.md",
         "skills/apigee-mcp-gateway/references/mcp_rest_bridge.md",
     ],
-    "apigee-api-proxy": [
+    "apigee-proxy-builder": [
+        "skills/apigee-proxy-builder/SKILL.md",
         "skills/apigee-proxy-builder/references/policies_security.md",
         "skills/apigee-proxy-builder/references/policies_caching.md",
         "skills/apigee-proxy-builder/references/policies_mediation.md",

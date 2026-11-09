@@ -13,7 +13,7 @@ description: "Conventions for creating and modifying Apigee X proxy bundles, sha
 # Apigee X Proxy Development Standards
 
 ## 1. Workflow (always)
-1. **New proxy**: start from a scaffold (`apigee-api-proxy`, `apigee-ai-gateway`, `apigee-mcp-gateway` skills), then customise.
+1. **New proxy**: start from a scaffold (`apigee-proxy-builder`, `apigee-ai-gateway`, `apigee-mcp-gateway` skills), then customise.
 2. **Existing proxy**: export the revision deployed in the target environment (`apigee_ctl.py export NAME --env ENV`);
    never edit a stale local copy or assume the latest revision is the deployed one.
 3. Run `validate_bundle.py <dir> --strict` after every change; never deploy a failing bundle.

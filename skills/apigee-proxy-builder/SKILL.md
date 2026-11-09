@@ -1,42 +1,87 @@
 ---
 name: apigee-proxy-builder
 description: >
-  Core, standalone skill for authoring, reviewing, debugging, validating, packaging and deploying Apigee X
-  API proxies and shared flows - the foundation for API Management, AI Gateway (LLM) and MCP Tools Gateway
-  proxies. Covers bundle anatomy, 60+ policy types (including LLMTokenQuota, PromptTokenLimit,
-  SanitizeUserPrompt/SanitizeModelResponse, SemanticCacheLookup/Populate, ParsePayload,
-  MonetizationLimitsCheck, DataCapture, TraceCapture), flows, conditions, endpoints, routing, fault handling,
-  JavaScript callouts and shared flows. Start here for any Apigee proxy task; it routes to the specialised
-  apigee-x-provisioning, apigee-api-proxy, apigee-ai-gateway, apigee-mcp-gateway and apigee-proxy-lifecycle skills.
+  Core, standalone skill for scaffolding, authoring, reviewing, debugging, validating, packaging and deploying
+  Apigee X REST/HTTP API proxies and reusable shared flows - and the policy/reference foundation for AI Gateway
+  (LLM) and MCP Tools Gateway proxies. Use for "put Apigee in front of my backend/Cloud Run service", "expose
+  this OpenAPI spec through Apigee", API key / OAuth 2.0 / JWT (JWKS) protection, spike arrest and product-driven
+  quota, OpenAPI validation, response caching, CORS, backend mTLS / Google ID or access tokens, shared flows, and
+  60+ policy types (including AI/LLM and MCP policies), flows, conditions, routing, fault handling, and JavaScript
+  callouts. Routes to specialised apigee-x-provisioning, apigee-ai-gateway, apigee-mcp-gateway and
+  apigee-proxy-lifecycle skills when appropriate.
 ---
 
-# Apigee X API Proxy Development
+# Apigee X API Proxy & Shared Flow Builder
 
-Comprehensive skill for building API proxies on Google Cloud's Apigee X platform. Covers the full proxy development lifecycle: bundle structure, endpoint configuration, flow design, policy implementation, fault handling, JavaScript extensibility, shared flows, and advanced patterns.
+Comprehensive skill for scaffolding and hand-authoring API proxies and shared flows on Google Cloud's Apigee X platform. Covers greenfield REST/HTTP proxy & shared-flow generation (`scaffold_api_proxy.py`, `scaffold_shared_flow.py`), bundle structure, 60+ policy types, flow execution design, conditional routing, fault handling, JavaScript extensibility, automated bundle validation (`validate_bundle.py`), and deployment (`deploy_bundle.sh`).
 
-**This skill covers:** API proxy bundle authoring, policy configuration (60+ policy types, including the AI/LLM and MCP policies), flow execution design, conditional routing, fault handling, JavaScript callouts, shared flows, automated bundle validation, and advanced development patterns.
+**This skill covers:** REST/HTTP API proxy & shared-flow scaffolding (OpenAPI specs, API key/OAuth/JWT auth, spike arrest, product quotas, caching, CORS, backend mTLS & Google ID/access tokens), policy configuration (60+ policy types, including AI/LLM and MCP policies), flow pipelines, fault handling, JavaScript callouts, and bundle validation/packaging.
 
 **This skill does NOT cover:** Apigee Hybrid-specific infrastructure provisioning, CI/CD pipeline server setup, or GCP IAM role creation. Focus is on proxy development artifacts and gateway execution logic.
 
 ---
 
-## Skill Map: pick the right companion skill
+## Skill Map: pick the right skill
 
-All six skills live in this repo and share this skill's validator and references.
+All five skills live in this repo and share this skill's validator, deploy script, and policy references.
 
 | Task | Skill | Fast path |
 |---|---|---|
 | **No Apigee org yet**: provision Apigee X (org, instance, PAYG environments, Analytics, PSC load balancer) with Terraform | [`apigee-x-provisioning`](../apigee-x-provisioning/SKILL.md) | `provision.py plan/apply` |
-| New REST/HTTP API proxy (API key, OAuth, JWT, OAS validation, quota, caching, CORS) or a reusable shared flow | [`apigee-api-proxy`](../apigee-api-proxy/SKILL.md) | `scaffold_api_proxy.py`, `scaffold_shared_flow.py` |
-| LLM / AI Gateway proxy (Gemini, Claude, model routing, Model Armor, token quota, semantic cache, cost) | [`apigee-ai-gateway`](../apigee-ai-gateway/SKILL.md) | `scaffold_ai_gateway.py` |
-| MCP / Tools Gateway proxy (per-tool entitlement, tool-argument limits, keyless handshake) | [`apigee-mcp-gateway`](../apigee-mcp-gateway/SKILL.md) | `scaffold_mcp_proxy.py` |
-| **Change an existing proxy** (export the deployed revision, edit, diff, redeploy, roll back), products, KVMs, target servers, flow hooks, trace | [`apigee-proxy-lifecycle`](../apigee-proxy-lifecycle/SKILL.md) | `apigee_ctl.py`, `bundle_edit.py` |
-| Hand-authoring policies, flows, conditions or debugging any proxy | this skill | references below + `validate_bundle.py` |
+| **New REST/HTTP API proxy or Shared Flow**, or hand-authoring policies, flows, conditions & bundle validation | **this skill** (`apigee-proxy-builder`) | `scaffold_api_proxy.py`, `scaffold_shared_flow.py`, `validate_bundle.py` |
+| **LLM / AI & IDE Gateway proxy** (Gemini, Claude, OpenAI, Antigravity/Claude Code/Copilot, SSE `<EventFlow>`, Model Armor, token quota, semantic cache) | [`apigee-ai-gateway`](../apigee-ai-gateway/SKILL.md) | `scaffold_ai_gateway.py` |
+| **MCP / Tools Gateway proxy** (per-tool entitlement, tool-argument limits, keyless handshake) | [`apigee-mcp-gateway`](../apigee-mcp-gateway/SKILL.md) | `scaffold_mcp_proxy.py` |
+| **Change an existing deployed proxy** (export deployed revision, edit, diff, redeploy, roll back), products, apps/keys, KVMs, target servers, flow hooks, trace | [`apigee-proxy-lifecycle`](../apigee-proxy-lifecycle/SKILL.md) | `apigee_ctl.py`, `bundle_edit.py` |
 
-**Golden rule for every task:** generate or edit, then `validate_bundle.py`, then (for an existing proxy) `apigee_ctl.py diff`,
+**Golden rule for every task:** generate or edit, then `validate_bundle.py --strict`, then (for an existing proxy) `apigee_ctl.py diff`,
 then deploy. Never deploy a bundle that fails validation. Review designs against
 [best_practices_checklist.md](references/best_practices_checklist.md) (Google's official best practices; items marked R are not machine-checkable) and, for anything internet-facing,
 [security_architecture.md](references/security_architecture.md) (Cloud Armor/WAAP perimeter, mTLS, data masking).
+
+---
+
+## Fast Path: Scaffold a REST API Proxy or Shared Flow
+
+Before scaffolding a new REST proxy, clarify unknown inputs (never guess secrets):
+- **Backend URL(s) & auth**: `--target` or `--target-server`, `--target-auth idtoken|accesstoken`, `--target-mtls ref://keystore:alias`, `--target-truststore ref://...`
+- **Client authentication**:
+  - `apikey` (`verifyapikey.VA-VerifyAPIKey.client_id`) — partner/internal apps, product-driven entitlement
+  - `oauth` + `--token-endpoint` (`client_id`) — app-to-app short-lived tokens & scopes (in production, run `/token` in a dedicated shared identity proxy)
+  - `jwt` + `--jwks-url` + `--issuer` (`jwt.JWT-VerifyToken.decoded.claim.sub`) — IdP tokens (Google, Okta, Entra ID, Auth0)
+  - `none` — truly public APIs only
+- **Contract, traffic & caching**: `--oas <spec.yaml|json>` (adds `OASValidation`, per-operation conditional flows, `NotFound` 404 catch-all, and product operations), `--spike-arrest 20ps`, `--quota`, `--cors "*"`, `--cache-ttl 60`, `--xml-threat`, `--health` (`/ping`), `--cloud-logging`
+
+```bash
+SKILL=<path-to>/skills/apigee-proxy-builder
+CTL="python3 <path-to>/skills/apigee-proxy-lifecycle/scripts/apigee_ctl.py"
+
+# 1. Scaffold REST proxy + matching api_product.json
+python3 $SKILL/scripts/scaffold_api_proxy.py --out ./orders-v1 \
+  --name orders-v1 --basepath /orders/v1 --target https://mocktarget.apigee.net \
+  --auth apikey --quota --spike-arrest 20ps --cors "*" --oas ./orders-v1.json --cache-ttl 60 --health
+
+# 2. Optional: scaffold a reusable Shared Flow (consume via --shared-flow sf-security or flowhook-attach)
+python3 $SKILL/scripts/scaffold_shared_flow.py --out ./sf-security --name sf-security \
+  --features apikey,spikearrest,threat,strip-auth
+
+# 3. Validate + deploy, then apply product & create developer app
+python3 $SKILL/scripts/validate_bundle.py ./orders-v1 --strict
+bash    $SKILL/scripts/deploy_bundle.sh   ./orders-v1 --org $ORG --env $ENV
+$CTL product-apply ./orders-v1/api_product.json --env $ENV
+$CTL app-create dev@example.com orders-tester --product orders-v1-standard --create-developer
+```
+
+Design checklist, KVM/backend-key snippets, and post-deploy REST test matrix: [api_proxy_patterns.md](references/api_proxy_patterns.md).
+
+### REST Proxy Troubleshooting
+| Symptom | Likely cause |
+|---|---|
+| `InvalidApiKeyForGivenResource` / 401 with a valid key | Product has no operation matching the path/verb, product not in this env, or app not approved |
+| `steps.oasvalidation.Failed` for a valid path | Spec `servers` URL path vs proxy base path mismatch, or path params not declared |
+| Every response is 404 | Path not covered by any OAS operation (catch-all `NotFound` flow) |
+| Quota never applies | Product operation has no `quota`, or `Quota` runs before `VerifyAPIKey` |
+| 500 `GoogleTokenGenerationFailure` | Deployed without `--sa`, or runtime SA lacks `roles/run.invoker` / target IAM role |
+| CORS fails in browser | Origin not in `--cors` list, or auth header missing from `AllowHeaders` |
 
 ---
 
@@ -255,6 +300,7 @@ CLIENT RESPONSE SENT
 | Document | Focus Area |
 |---|---|
 | [**`proxy_bundle_anatomy.md`**](references/proxy_bundle_anatomy.md) | Bundle directory structure, file types, naming conventions |
+| [**`api_proxy_patterns.md`**](references/api_proxy_patterns.md) | REST API proxy design checklist, KVM/backend-key snippets, product plans, post-deploy test matrix |
 | [**`endpoints_and_routing.md`**](references/endpoints_and_routing.md) | ProxyEndpoint, TargetEndpoint, RouteRules, proxy chaining |
 | [**`flows_and_execution.md`**](references/flows_and_execution.md) | Flow pipeline, PreFlow/PostFlow/conditional flows, execution order |
 | [**`flow_variables_and_conditions.md`**](references/flow_variables_and_conditions.md) | Variable system, conditions syntax, message templates |

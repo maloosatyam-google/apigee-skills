@@ -543,7 +543,7 @@ def main():
     res = "\n".join(f"    <Resource>{r}</Resource>" for r in resources)
     open(os.path.join(root, f"{o.name}.xml"), "w").write(f"""{H}<APIProxy revision="1" name="{o.name}">
   <DisplayName>{o.name}</DisplayName>
-  <Description>REST API proxy scaffolded by the apigee-api-proxy skill</Description>
+  <Description>REST API proxy scaffolded by the apigee-proxy-builder skill</Description>
   <BasePaths>{o.basepath}</BasePaths>
   <Policies>
 {pol}

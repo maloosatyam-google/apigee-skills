@@ -364,7 +364,7 @@ def sample(o, out):
     org = out["org"]["value"]
     base = out.get("apigee_api_base", {}).get("value", "https://apigee.googleapis.com")
     tmp = tempfile.mkdtemp(prefix="apigee-sample-")
-    scaffold = os.path.join(SKILLS, "apigee-api-proxy", "scripts", "scaffold_api_proxy.py")
+    scaffold = os.path.join(SKILLS, "apigee-proxy-builder", "scripts", "scaffold_api_proxy.py")
     ctl = os.path.join(SKILLS, "apigee-proxy-lifecycle", "scripts", "apigee_ctl.py")
     subprocess.run([sys.executable, scaffold, "--out", f"{tmp}/httpbin", "--name", "httpbin", "--basepath", "/httpbin",
                     "--target", "https://httpbin.org", "--auth", "none", "--spike-arrest", "20ps"], check=True)

@@ -14,8 +14,8 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SK = os.path.join(ROOT, "skills")
 VALIDATE = os.path.join(SK, "apigee-proxy-builder", "scripts", "validate_bundle.py")
-API = os.path.join(SK, "apigee-api-proxy", "scripts", "scaffold_api_proxy.py")
-SF = os.path.join(SK, "apigee-api-proxy", "scripts", "scaffold_shared_flow.py")
+API = os.path.join(SK, "apigee-proxy-builder", "scripts", "scaffold_api_proxy.py")
+SF = os.path.join(SK, "apigee-proxy-builder", "scripts", "scaffold_shared_flow.py")
 AI = os.path.join(SK, "apigee-ai-gateway", "scripts", "scaffold_ai_gateway.py")
 MCP = os.path.join(SK, "apigee-mcp-gateway", "scripts", "scaffold_mcp_proxy.py")
 CTL = os.path.join(SK, "apigee-proxy-lifecycle", "scripts", "apigee_ctl.py")
@@ -812,7 +812,7 @@ class InstallScript(Base):
 
         proj = self.p("proj")
         run("bash", inst, "--project", proj)
-        self.assertTrue(os.path.isfile(os.path.join(proj, ".agents/skills/apigee-api-proxy/SKILL.md")))
+        self.assertTrue(os.path.isfile(os.path.join(proj, ".agents/skills/apigee-proxy-builder/SKILL.md")))
         self.assertTrue(os.path.isfile(os.path.join(proj, ".agents/rules/apigee_proxy_standards.md")))
         self.assertTrue(os.path.isfile(os.path.join(proj, ".agents/agents/apigee-architect.md")))
 
@@ -847,7 +847,8 @@ class InstallScript(Base):
 
         raw = self.p("raw")
         run("bash", inst, "--target", raw)
-        self.assertTrue(os.path.isfile(os.path.join(raw, "apigee-api-proxy/SKILL.md")))
+        self.assertTrue(os.path.isfile(os.path.join(raw, "apigee-proxy-builder/SKILL.md")))
+        self.assertEqual(len([d for d in os.listdir(raw) if os.path.isdir(os.path.join(raw, d))]), 5)
 
 
 class ReleaseNotesSync(Base):
