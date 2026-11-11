@@ -90,14 +90,17 @@ $C key-revoke jane@partner.com partner-portal KEY --product orders-v1-standard  
 Secrets (consumer secrets, KVM values) are masked in output unless `--show-secret` / `--show`; never paste them into chat
 or commit them. Every `*-delete` requires `--yes` and must be confirmed with the user first.
 
-## Choosing what to change
-| Requirement | Change the... | Not the... |
+## Choosing what to change (explain in plain English)
+
+Users rarely ask for a `TargetServer`, `KVM`, `API product`, or `FlowHook` by name — they describe the business change (*"raise Partner Corp's limit"*, *"rotate the backend secret"*, *"point staging to a new backend"*, *"audit what protections our live proxy is missing"*). Translate their goal in plain English and let them know when **no proxy redeployment is required**:
+
+| What the user asks in plain English | What to update in Apigee | Needs proxy redeploy? |
 |---|---|---|
-| New quota / plan / allowed paths / tools / models | **API product** (`product-apply`) | proxy |
-| Per-environment backend host | **TargetServer** (`targetserver-apply`) | target URL in XML |
-| Secret or tunable value (rate card, thresholds, keys) | **encrypted KVM** (`kvm-put`) | policy XML |
-| Policy for every proxy in an env | **shared flow + flow hook** | each proxy |
-| Request/response behaviour | proxy bundle (this workflow) | - |
+| "Change a customer's rate/token limit, add a tier, or grant access to a path / AI model / MCP tool" | **Access Plan (API product)** (`product-apply`) | **No** — live immediately |
+| "Point dev, staging, or prod to a different backend URL" | **Backend Host Config (`TargetServer`)** (`targetserver-apply`) | **No** |
+| "Rotate a backend API key, update AI model pricing, or change a tunable threshold" | **Encrypted Secret/Settings Store (`KVM`)** (`kvm-put`) | **No** (refreshes after cache TTL) |
+| "Enforce the same security or logging rule across *every* API in this environment" | **Shared Security Rule (`SharedFlow` + `FlowHook`)** (`flowhook-attach`) | **No** per-proxy edits |
+| "Add burst protection, caching, CORS, safety checks, or change request/response logic" | **Proxy bundle** (`export → edit → validate → diff → update`) — see [`plain_english_policy_guide.md`](../apigee-proxy-builder/references/plain_english_policy_guide.md) to recommend missing protections in plain English | **Yes** (zero-downtime revision swap) |
 
 ## Promotion across environments
 Promote the **same revision** you tested: `$C deploy orders-v1 --rev 7 --env prod --sa $PROD_SA`. Create the

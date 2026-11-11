@@ -6,7 +6,7 @@ use cases:
 | Use case | Skill | What you get |
 |---|---|---|
 | **Provision Apigee X** (Terraform) | [`apigee-x-provisioning`](skills/apigee-x-provisioning/SKILL.md) | Full-fledged paid org Terraform module + `provision.py` (`wizard`, `plan`, `apply`, `export`): defaults to **PAYG + `INTERMEDIATE` env with Analytics + PSC + Google-managed keys & cert + no Data Residency + `nip.io`**; also supports `SUBSCRIPTION`, `VPC_PEERING`, CMEK, Data Residency, custom domains + Cloud DNS, multi-region HA, Cloud Armor, Static NAT IPs & Southbound PSC |
-| **API** Proxy & Shared Flow Builder (REST + Core) | [`apigee-proxy-builder`](skills/apigee-proxy-builder/SKILL.md) | `scaffold_api_proxy.py` (API key / OAuth / JWT, OAS validation, quota, cache, CORS, JSON/XML threat protection, backend mTLS), `scaffold_shared_flow.py`, 25 policy/flow references (incl. official best-practices and security-architecture checklists), `validate_bundle.py`, `deploy_bundle.sh` |
+| **API** Proxy & Shared Flow Builder (REST + Core) | [`apigee-proxy-builder`](skills/apigee-proxy-builder/SKILL.md) | **Plain-English policy advisor** (`recommend_policies.py` + `plain_english_policy_guide.md`), `scaffold_api_proxy.py` (API key / OAuth / JWT, OAS validation, quota, cache, CORS, JSON/XML threat protection, backend mTLS), `scaffold_shared_flow.py`, 26 policy/flow references, `validate_bundle.py`, `deploy_bundle.sh` |
 | **AI** Gateway (LLM & IDE) | [`apigee-ai-gateway`](skills/apigee-ai-gateway/SKILL.md) | `scaffold_ai_gateway.py` (Gemini + Claude + OpenAI, **IDE & Copilot gateways**, **SSE streaming `<EventFlow>`**, `/auto` routing, Model Armor incl. `ContinuousScan`, token quota, 8-collector analytics, semantic cache) |
 | **MCP** Tools Gateway | [`apigee-mcp-gateway`](skills/apigee-mcp-gateway/SKILL.md) | `scaffold_mcp_proxy.py` (per-tool products, argument limits, keyless handshake) |
 | Update existing proxies | [`apigee-proxy-lifecycle`](skills/apigee-proxy-lifecycle/SKILL.md) | `apigee_ctl.py` (export, diff, update, rollback, products, developers, apps & keys, KVMs, target servers, flow hooks, trace masks, trace), `bundle_edit.py` |
@@ -183,6 +183,11 @@ source apigee-x-infra/apigee-x.env
 export APIGEE_ORG=my-org APIGEE_ENV=dev APIGEE_DEPLOY_SA=apigee-runtime@my-proj.iam.gserviceaccount.com
 S=skills
 
+# New to Apigee? Get plain-English protection recommendations + a ready-to-run scaffold command
+python3 $S/apigee-proxy-builder/scripts/recommend_policies.py \
+  --describe "React web app calling our Cloud Run orders service with an OpenAPI spec"
+# Or interactive Q&A: python3 $S/apigee-proxy-builder/scripts/recommend_policies.py wizard
+
 # API proxy from an OpenAPI spec
 python3 $S/apigee-proxy-builder/scripts/scaffold_api_proxy.py --out ./orders-v1 --name orders-v1 \
   --basepath /orders/v1 --target https://mocktarget.apigee.net --auth apikey --quota \
@@ -209,12 +214,13 @@ $C diff ./work/orders-v1 --env dev && $C update ./work/orders-v1 --env dev
 $C rollback orders-v1 --env dev      # if needed
 ```
 
-Example prompts for an agent with these skills installed:
+Example prompts for an agent with these skills installed (no Apigee jargon required):
+- "I have a Cloud Run service for customer orders — I don't know Apigee, what protections do I need and can you set it up?"
 - "Create an Apigee proxy for https://orders-xyz.a.run.app using ./openapi.yaml, protected by API keys, 100 req/min."
-- "Put an AI gateway in front of Gemini and Claude with per-user token quotas and Model Armor."
+- "Give our engineering team one gateway key for Claude Code, Copilot, and Gemini — keep costs capped and block unsafe prompts."
 - "Expose our inventory MCP server through Apigee; only the Ops persona may call adjustStock above 100 units."
 - "Provision Apigee X in project my-proj (us-central1) with a PAYG Intermediate environment and Analytics."
-- "Add a spike arrest of 10 per second to the deployed `payments-v1` proxy in test, show me the diff first."
+- "Add burst protection of 10 req/sec to the deployed `payments-v1` proxy in test, show me the diff first."
 
 ## Repository layout
 
@@ -229,7 +235,7 @@ scripts/
   setup_cloud_scheduler.sh   provisions the weekly Google Cloud Scheduler job (`0 9 * * 1`)
   release_notes_state.json   tracks the last synced Apigee X release date & version
 skills/
-  apigee-proxy-builder/      core + REST: SKILL.md, references/ (25 docs), scaffold_api_proxy.py, scaffold_shared_flow.py, validate_bundle.py, deploy_bundle.sh
+  apigee-proxy-builder/      core + REST: SKILL.md, references/ (26 docs), recommend_policies.py, scaffold_api_proxy.py, scaffold_shared_flow.py, validate_bundle.py, deploy_bundle.sh
   apigee-ai-gateway/         scaffold_ai_gateway.py, references/{model_routing_playbook.md,ide_and_coding_agent_gateways.md}
   apigee-mcp-gateway/        scaffold_mcp_proxy.py, references/mcp_rest_bridge.md
   apigee-proxy-lifecycle/    apigee_ctl.py, bundle_edit.py, references/update_playbook.md
@@ -256,7 +262,7 @@ python3 scripts/sync_release_notes.py --check
 ## Development
 
 ```bash
-make test       # 40 offline tests (Terraform module tests run when terraform is installed): scaffolds, IDE/SSE EventFlow & validator bug detection, bundle edits, lifecycle vs mock API, JS converters, multi-agent installer, release-notes sync
+make test       # 42 offline tests (Terraform module tests run when terraform is installed): plain-English advisor, scaffolds, IDE/SSE EventFlow & validator bug detection, bundle edits, lifecycle vs mock API, JS converters, multi-agent installer, release-notes sync
 make examples   # generate + strictly validate one bundle of each kind into ./build
 make lint
 ```

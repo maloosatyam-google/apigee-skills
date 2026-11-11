@@ -14,6 +14,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SK = os.path.join(ROOT, "skills")
 VALIDATE = os.path.join(SK, "apigee-proxy-builder", "scripts", "validate_bundle.py")
+RECOMMEND = os.path.join(SK, "apigee-proxy-builder", "scripts", "recommend_policies.py")
 API = os.path.join(SK, "apigee-proxy-builder", "scripts", "scaffold_api_proxy.py")
 SF = os.path.join(SK, "apigee-proxy-builder", "scripts", "scaffold_shared_flow.py")
 AI = os.path.join(SK, "apigee-ai-gateway", "scripts", "scaffold_ai_gateway.py")
@@ -890,6 +891,37 @@ class ReleaseNotesSync(Base):
         dr = run("bash", sched, "--project", "my-gcp-project", "--region", "us-central1", "--dry-run")
         self.assertIn("gcloud scheduler jobs create http apigee-release-notes-sync", dr.stdout)
         self.assertIn("Asia/Kolkata", dr.stdout)
+
+
+class PlainEnglishAdvisor(Base):
+    def test_describe_and_recommended_scaffolds_validate(self):
+        cases = [
+            ("api", ["--describe", "React web app calling our Cloud Run orders service with caching", "--oas", SPEC]),
+            ("ai", ["--describe", "Team using Claude Code and Copilot with safety checks and smart auto-route", "--project", "p"]),
+            ("mcp", ["--describe", "Expose our Cloud Run MCP tool server to agents with refund limits"]),
+            ("shared-flow", ["--describe", "Reusable security shared rule across all APIs"]),
+        ]
+        for expected_kind, flags in cases:
+            out = self.p(f"adv-{expected_kind}")
+            r_txt = py(RECOMMEND, *flags, "--out", out)
+            self.assertIn("What it does:", r_txt.stdout)
+            self.assertIn("Plain-English Key Terms", r_txt.stdout)
+            r_json = py(RECOMMEND, *flags, "--out", out, "--json")
+            plan = json.loads(r_json.stdout)
+            self.assertEqual(plan["kind"], expected_kind)
+            self.assertTrue(plan["recommended"])
+            self.assertTrue(plan["glossary"])
+            # Execute the exact scaffold command recommended by the advisor and strictly validate the bundle
+            py(*plan["scaffold_cmd"][1:])
+            self.validate(out)
+
+    def test_wizard_defaults(self):
+        r = py(RECOMMEND, "wizard", "--json", stdin="\n" * 10)
+        # Strip interactive prompt prefix before JSON object
+        idx = r.stdout.index("{")
+        plan = json.loads(r.stdout[idx:])
+        self.assertEqual(plan["kind"], "api")
+        self.assertTrue(any("Cloud Run" in item["capability"] for item in plan["recommended"]))
 
 
 if __name__ == "__main__":

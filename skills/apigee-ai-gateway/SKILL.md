@@ -10,6 +10,7 @@ description: >-
   ContinuousScan), LLM token quotas (LLMTokenQuota enforce + buffered/SSE count pair, PromptTokenLimit), semantic
   caching (SemanticCacheLookup/Populate), cost and budget governance (KVM rate card, Quota micro-dollar budgets,
   MonetizationLimitsCheck + 8-collector DataCapture), multi-header API key + JWT user attribution, and failover.
+  Recommends AI protections and guardrails in plain English for users unfamiliar with Apigee terminology.
   Standalone: includes a scaffold that generates a deployable bundle and matching operationGroup + llmOperationGroup API product.
 ---
 
@@ -17,14 +18,30 @@ description: >-
 
 Build a **model-agnostic AI & IDE Gateway** on Apigee X. Clients and coding assistants call one endpoint with one API key.
 The gateway authenticates, screens, rate-limits, caches, routes, prices and logs every LLM call.
-Shares the validator/deploy scripts and the full policy XML reference with
+Shares the validator/deploy scripts, plain-English policy advisor ([`recommend_policies.py`](../apigee-proxy-builder/scripts/recommend_policies.py)), and full policy XML reference with
 [`apigee-proxy-builder`](../apigee-proxy-builder/SKILL.md); changes to a deployed gateway go through
 [`apigee-proxy-lifecycle`](../apigee-proxy-lifecycle/SKILL.md).
 
 ## When to use
-- "Put Apigee in front of Gemini / Claude / OpenAI", "build an IDE gateway for Antigravity, Claude Code, GitHub Copilot, or Microsoft Copilot", "add SSE streaming for AI proxies"
+- "Put Apigee in front of Gemini / Claude / OpenAI", "build an IDE gateway for Antigravity, Claude Code, GitHub Copilot, or Microsoft Copilot", "what protections should I put in front of our LLMs?", "add SSE streaming for AI proxies"
 - "add Model Armor", "token quota per user/app/model", "semantic cache", "auto-route prompts to the cheapest suitable model", "budget / chargeback / prepaid wallet"
 - Reviewing or debugging an LLM proxy (SSE stream cut off at 30s, duplicate `<EventFlow>` quota/analytics firing, `expressions.parser.RegexRequired` deploy error, Claude `anthropic-beta` HTTP 400 storms, `InvalidAPICallAsNoApiProductMatchFound`, empty `response.content`)
+
+## Step 0: Recommend AI Protections in Plain English (Start Here)
+Most users **do not know Apigee AI policy names** (`LLMTokenQuota`, `PromptTokenLimit`, `SanitizeUserPrompt`, `SemanticCacheLookup`, `<EventFlow>`). Before scaffolding or editing, ask 3–4 everyday questions (*Which AI models or coding IDEs will connect? Should we cap token spend per user/app? Screen prompts for jailbreaks & sensitive data? Auto-route simple prompts to cheaper models?*) and present your recommendation in **simple English** (or run `python3 $SK/apigee-proxy-builder/scripts/recommend_policies.py --kind ai ...`):
+
+| Plain-English Protection to Recommend | What It Solves for the User | Apigee Behind the Scenes (`scaffold_ai_gateway.py`) |
+|---|---|---|
+| **One gateway key for apps & coding IDEs (no GCP keys on laptops)** *(always)* | Developers & IDEs authenticate with a revocable gateway key while Apigee signs into Vertex AI automatically | Multi-header `VerifyAPIKey` + `GoogleAccessToken` (default) |
+| **Live word-by-word streaming without 30-second drops** *(always)* | Chat UIs, Claude Code, Antigravity & Copilot stream tokens smoothly while safety & token counting still run | Dedicated `*-stream-target` + `<EventFlow>` (`--sse`, default) |
+| **Multi-model & IDE support (Gemini + Claude + OpenAI/Copilot)** | Call Gemini, Anthropic Claude (`/v1/messages`), and OpenAI/Copilot (`/v1/chat/completions`) through one endpoint | `--claude` and/or `--openai` |
+| **Cap AI token usage per app/user & stop mega-prompt surges** *(recommended)* | Prevents a runaway agent loop or giant pasted file from burning thousands of dollars in tokens | `LLMTokenQuota` + `PromptTokenLimit` (`--token-quota --prompt-token-limit 5000pm`) |
+| **Screen prompts & streaming answers for jailbreaks, toxicity & PII** *(recommended)* | Blocks prompt-injection attacks before paying for model inference and scans live streams chunk-by-chunk | Model Armor `SanitizeUserPrompt` + `SanitizeModelResponse` (`--armor-region R`) |
+| **Track token spend & model usage per caller** *(recommended)* | Records input/output tokens, model used, cache hits, and faults in Apigee Analytics dashboards | 8-collector `DataCapture` (`--analytics`) |
+| **Smart model router (`/models/auto`) to lower AI costs** *(optional)* | Sends everyday prompts to fast/cheap models (Flash/Haiku) and complex coding/reasoning to frontier models | Classifier `ServiceCallout` + `AutoRouting.js` (`--auto-route`) |
+| **Reuse answers to similar questions (AI smart cache)** *(optional)* | Skips the LLM completely on semantically matching questions (`x-use-cache: true`), saving 100% of tokens | `SemanticCacheLookup` + `SemanticCachePopulate` (`--cache-region R ...`) |
+
+Full plain-English guide & 1-sentence glossary: [`plain_english_policy_guide.md`](../apigee-proxy-builder/references/plain_english_policy_guide.md).
 
 ## Prerequisites (check before deploying)
 - Vertex AI API enabled; runtime service account with `roles/aiplatform.user`

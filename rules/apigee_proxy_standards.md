@@ -13,6 +13,7 @@ description: "Conventions for creating and modifying Apigee X proxy bundles, sha
 # Apigee X Proxy Development Standards
 
 ## 1. Workflow (always)
+0. **Plain-English guidance first**: assume users do not know Apigee jargon (`SpikeArrest`, `OASValidation`, `LLMTokenQuota`, `Model Armor`, `ParsePayload`, `TargetServer`, `KVM`). Ask clarifying questions in everyday business language and proactively recommend a plain-English protection plan (**Included Baseline** + **Optional Add-Ons**, with Apigee policy names in parentheses; see `skills/apigee-proxy-builder/references/plain_english_policy_guide.md` and `recommend_policies.py`) before scaffolding or editing.
 1. **New proxy**: start from a scaffold (`apigee-proxy-builder`, `apigee-ai-gateway`, `apigee-mcp-gateway` skills), then customise.
 2. **Existing proxy**: export the revision deployed in the target environment (`apigee_ctl.py export NAME --env ENV`);
    never edit a stale local copy or assume the latest revision is the deployed one.

@@ -6,14 +6,16 @@ description: >-
   API products (payloadOperationGroup + ParsePayload), per-tool quota, persona-based tool sets, business-rule
   limits on tool arguments returned as MCP tool errors, keyless MCP handshake, JSON-RPC protocol hygiene,
   credential stripping, Cloud Run backends with Google ID tokens, Apigee API hub generated MCP servers, and
-  tool-call audit logging. Standalone: includes a scaffold that generates the proxy and per-persona API products.
+  tool-call audit logging. Recommends agent tool guardrails in plain English for users unfamiliar with Apigee terminology.
+  Standalone: includes a scaffold that generates the proxy and per-persona API products.
 ---
 
 # Apigee MCP / Tools Gateway
 
 Agents (ADK, Gemini CLI, Claude, any MCP client) should never hold backend credentials or reach tools
 directly. Apigee sits in between and decides, **per tool call**, who may call what, how often, and
-with which argument values. Shares the validator/deploy scripts and the full policy XML reference
+with which argument values. Shares the validator/deploy scripts, plain-English policy advisor
+([`recommend_policies.py`](../apigee-proxy-builder/scripts/recommend_policies.py)), and the full policy XML reference
 ([`policies_mcp_tools.md`](../apigee-proxy-builder/references/policies_mcp_tools.md)) with
 [`apigee-proxy-builder`](../apigee-proxy-builder/SKILL.md).
 
@@ -24,18 +26,22 @@ Agent ── MCP JSON-RPC (x-apikey) ──▶ Apigee /<domain>/mcp ──▶ MC
 ```
 
 ## When to use
-- "Govern my MCP server", "only Support agents may call issueRefund", "limit refunds over $50", "per-tool quota"
+- "Govern my MCP server", "what protections should I put in front of our AI agent tools?", "only Support agents may call issueRefund", "limit refunds over $50", "per-tool quota"
 - Exposing REST APIs as agent tools (MCP over REST) with the same governance
 - Debugging MCP clients that hang or reject gateway errors (id type, handshake, method allowlist)
 
-## Step 0 - gather requirements
-| Question | Drives |
-|---|---|
-| MCP server URL (streamable HTTP)? Cloud Run? | `--target` (GoogleIDToken auto, `--no-id-token` otherwise) |
-| Full tool list (`tools/list` output)? | `--tools` |
-| Which personas / agents get which tools? | `--persona "Name:tool,tool"` → one API product each |
-| Argument-level business rules? | `--limit "tool:arg:max:Persona:CODE:message"` |
-| Calls per minute per tool? | `--quota` |
+## Step 0: Gather Needs & Recommend Agent Guardrails in Plain English
+Most users **do not know Apigee MCP policy names** (`ParsePayload`, `payloadOperationGroup`, `GoogleIDToken`). Ask plain-English questions and present your recommended protections in simple English before scaffolding (`python3 $SK/apigee-proxy-builder/scripts/recommend_policies.py --kind mcp`):
+
+| Plain-English Question / Guardrail | What It Solves for the User | Apigee Behind the Scenes (`scaffold_mcp_proxy.py`) |
+|---|---|---|
+| **Where does your MCP server run?** (Cloud Run vs HTTPS) | Keeps Cloud Run private — Apigee signs in automatically and strips agent keys so agents can never bypass the gateway | `GoogleIDToken` + `AssignMessage` (`--target`, `--no-id-token` if non-GCP) |
+| **Which agent roles need which tools?** | Prevents a read-only/analytics agent from calling write or admin tools | `ParsePayload` + `VerifyAPIKey` + Persona API Products (`--tools ... --persona "Role:t1,t2"`) |
+| **Do any tools take dollar/quantity inputs that need a hard cap?** | Blocks risky actions (e.g., refunds above \$50) and returns a structured reason so the agent asks a human for approval | `ExtractVariables` + conditional `RaiseFault` (`--limit "tool:arg:max:Role:CODE:msg"`) |
+| **How many calls per minute should an agent be allowed per tool?** | Stops a looping or hallucinating agent from hammering backend systems | Per-tool `Quota` (`--quota 20`) |
+| **Smooth MCP client connection** *(included automatically)* | Allows standard MCP startup handshakes (`initialize`, `ping`) while blocking unsupported JSON-RPC methods | Method allowlist + conditional `VerifyAPIKey` on `tools/*` |
+
+Full plain-English guide & glossary: [`plain_english_policy_guide.md`](../apigee-proxy-builder/references/plain_english_policy_guide.md).
 
 ## Quick start
 

@@ -1,19 +1,20 @@
 ---
 name: apigee-proxy-builder
 description: >
-  Core, standalone skill for scaffolding, authoring, reviewing, debugging, validating, packaging and deploying
-  Apigee X REST/HTTP API proxies and reusable shared flows - and the policy/reference foundation for AI Gateway
-  (LLM) and MCP Tools Gateway proxies. Use for "put Apigee in front of my backend/Cloud Run service", "expose
-  this OpenAPI spec through Apigee", API key / OAuth 2.0 / JWT (JWKS) protection, spike arrest and product-driven
-  quota, OpenAPI validation, response caching, CORS, backend mTLS / Google ID or access tokens, shared flows, and
-  60+ policy types (including AI/LLM and MCP policies), flows, conditions, routing, fault handling, and JavaScript
-  callouts. Routes to specialised apigee-x-provisioning, apigee-ai-gateway, apigee-mcp-gateway and
-  apigee-proxy-lifecycle skills when appropriate.
+  Core, standalone skill for recommending protections in plain English and scaffolding, authoring, reviewing,
+  debugging, validating, packaging and deploying Apigee X REST/HTTP API proxies and reusable shared flows - and
+  the policy/reference foundation for AI Gateway (LLM) and MCP Tools Gateway proxies. Translates business needs
+  into plain-English security, rate-limiting, validation and caching recommendations for users unfamiliar with
+  Apigee terminology (`recommend_policies.py`). Use for "put Apigee in front of my backend/Cloud Run service",
+  "what protections/policies should I add?", "expose this OpenAPI spec through Apigee", API key / OAuth 2.0 /
+  JWT (JWKS) protection, spike arrest and product-driven quota, OpenAPI validation, response caching, CORS,
+  backend mTLS / Google ID or access tokens, shared flows, and 60+ policy types. Routes to specialised
+  apigee-x-provisioning, apigee-ai-gateway, apigee-mcp-gateway and apigee-proxy-lifecycle skills when appropriate.
 ---
 
 # Apigee X API Proxy & Shared Flow Builder
 
-Comprehensive skill for scaffolding and hand-authoring API proxies and shared flows on Google Cloud's Apigee X platform. Covers greenfield REST/HTTP proxy & shared-flow generation (`scaffold_api_proxy.py`, `scaffold_shared_flow.py`), bundle structure, 60+ policy types, flow execution design, conditional routing, fault handling, JavaScript extensibility, automated bundle validation (`validate_bundle.py`), and deployment (`deploy_bundle.sh`).
+Comprehensive skill for recommending gateway protections in plain English, scaffolding, and hand-authoring API proxies and shared flows on Google Cloud's Apigee X platform. Covers plain-English policy advising (`recommend_policies.py`), greenfield REST/HTTP proxy & shared-flow generation (`scaffold_api_proxy.py`, `scaffold_shared_flow.py`), bundle structure, 60+ policy types, flow execution design, conditional routing, fault handling, JavaScript extensibility, automated bundle validation (`validate_bundle.py`), and deployment (`deploy_bundle.sh`).
 
 **This skill covers:** REST/HTTP API proxy & shared-flow scaffolding (OpenAPI specs, API key/OAuth/JWT auth, spike arrest, product quotas, caching, CORS, backend mTLS & Google ID/access tokens), policy configuration (60+ policy types, including AI/LLM and MCP policies), flow pipelines, fault handling, JavaScript callouts, and bundle validation/packaging.
 
@@ -37,6 +38,41 @@ All five skills live in this repo and share this skill's validator, deploy scrip
 then deploy. Never deploy a bundle that fails validation. Review designs against
 [best_practices_checklist.md](references/best_practices_checklist.md) (Google's official best practices; items marked R are not machine-checkable) and, for anything internet-facing,
 [security_architecture.md](references/security_architecture.md) (Cloud Armor/WAAP perimeter, mTLS, data masking).
+
+---
+
+## Step 0: Recommend Protections in Plain English (Start Here)
+
+Most users **do not know Apigee policy names** (`SpikeArrest`, `OASValidation`, `VerifyJWT`, `TargetServer`, `KVM`). **Never ask *"Which Apigee policies do you want?"*** Instead, speak in everyday English and proactively recommend protections they may not realize exist:
+
+1. **Ask 3–4 short, plain-English questions** (only what isn't already clear):
+   - *Who calls this service?* (partner/internal apps, logged-in users via Google/Okta/Auth0, machine-to-machine services, or open public?)
+   - *Does a web browser call it directly?* (React/Vue/Angular frontend?)
+   - *Where does your backend run?* (private Cloud Run, Google API, HTTPS URL, or different URLs per dev/stage/prod?)
+   - *Do you have an OpenAPI / Swagger file, or slow read (`GET`) endpoints worth caching?*
+2. **Present a Plain-English Recommendation Summary** split into **Recommended Baseline (Included)** and **Optional Add-Ons**, keeping Apigee policy names in parentheses so the user learns without needing jargon upfront.
+3. **Run the Plain-English Advisor (`recommend_policies.py`)** to generate a tailored plain-English report + exact scaffold command across REST API, AI Gateway, MCP Gateway, or Shared Flow scenarios:
+   ```bash
+   python3 <path-to>/skills/apigee-proxy-builder/scripts/recommend_policies.py \
+     --describe "React web app calling our Cloud Run orders service with an OpenAPI spec"
+   # Or interactive Q&A: python3 <path-to>/skills/apigee-proxy-builder/scripts/recommend_policies.py wizard
+   ```
+
+| Plain-English Protection to Recommend | What It Solves for the User | Apigee Behind the Scenes (`scaffold_api_proxy.py`) |
+|---|---|---|
+| **Give each caller app a revocable key & tier plan** | Blocks unknown traffic; lets you revoke or rate-limit individual apps without redeploying | `VerifyAPIKey` + API Product (`--auth apikey`) |
+| **Verify user login tokens (Google / Okta / Auth0 / Entra)** | Checks cryptographic token signature & expiry at the edge for logged-in web/mobile users | `VerifyJWT` via JWKS (`--auth jwt --jwks-url ... --issuer ...`) |
+| **Issue short-lived app-to-app tokens** | Services exchange client credentials for temporary tokens instead of sending static keys | `OAuthV2` (`--auth oauth --token-endpoint`) |
+| **Smooth out sudden traffic spikes** *(always recommend)* | Prevents sudden bursts, retry storms, or runaway scripts from crashing your backend | `SpikeArrest` (`--spike-arrest 50ps`) |
+| **Enforce per-customer call limits (Free vs Pro)** | Caps calls per minute/day/month per app based on its assigned access plan | `Quota` + API Product (`--quota` / `--jwt-quota`) |
+| **Block oversized or deeply nested JSON / XML** *(always recommend)* | Stops malformed or malicious payloads from exhausting backend memory/CPU | `JSONThreatProtection` (default) / `XMLThreatProtection` (`--xml-threat`) |
+| **Reject requests that break your OpenAPI / Swagger spec** | Automatically blocks missing fields, wrong types, and unknown URLs (`404`) before your code runs | `OASValidation` + operation flows (`--oas ./openapi.yaml`) |
+| **Allow web browsers safely** | Handles browser `OPTIONS` preflight checks and restricts allowed website origins | `CORS` (`--cors "https://app.example.com"`) |
+| **Keep Cloud Run private & hide caller keys** | Strips caller keys, signs into Cloud Run automatically, and replaces raw `5xx` stack traces with clean JSON | `GoogleIDToken` (`--target-auth idtoken`) + `AssignMessage` + `DefaultFaultRule` |
+| **Speed up repeated `GET` reads** *(optional)* | Serves repeated read requests from memory for N seconds to cut latency and DB load | `ResponseCache` (`--cache-ttl 60`) |
+| **Stream zero-latency audit logs** *(optional)* | Logs every call asynchronously *after* the client receives their response | `MessageLogging` in `PostClientFlow` (`--cloud-logging`) |
+
+Full plain-English capability finder (REST, AI, MCP, and live ops) + 1-sentence Apigee glossary: [**`plain_english_policy_guide.md`**](references/plain_english_policy_guide.md).
 
 ---
 
@@ -299,6 +335,7 @@ CLIENT RESPONSE SENT
 
 | Document | Focus Area |
 |---|---|
+| [**`plain_english_policy_guide.md`**](references/plain_english_policy_guide.md) | **Plain-English protection advisor & 1-sentence Apigee glossary**: translates business goals into recommended policies across REST, AI, and MCP gateways |
 | [**`proxy_bundle_anatomy.md`**](references/proxy_bundle_anatomy.md) | Bundle directory structure, file types, naming conventions |
 | [**`api_proxy_patterns.md`**](references/api_proxy_patterns.md) | REST API proxy design checklist, KVM/backend-key snippets, product plans, post-deploy test matrix |
 | [**`endpoints_and_routing.md`**](references/endpoints_and_routing.md) | ProxyEndpoint, TargetEndpoint, RouteRules, proxy chaining |

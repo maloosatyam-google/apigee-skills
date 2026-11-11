@@ -85,6 +85,7 @@ SKILL_FILES = {
     ],
     "apigee-proxy-builder": [
         "skills/apigee-proxy-builder/SKILL.md",
+        "skills/apigee-proxy-builder/references/plain_english_policy_guide.md",
         "skills/apigee-proxy-builder/references/policies_security.md",
         "skills/apigee-proxy-builder/references/policies_caching.md",
         "skills/apigee-proxy-builder/references/policies_mediation.md",
